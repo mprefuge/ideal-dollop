@@ -15,9 +15,12 @@ class Session:
     folder: Path
     meta: dict
     recording: object  # recorder.Recording
+    live: object = None  # live.LiveSpeakers while naming voices mid-call
 
 
-def start_session(root: Path, title: str, extra_meta: dict | None = None, recording_factory=None) -> Session:
+def start_session(root: Path, title: str, extra_meta: dict | None = None, recording_factory=None,
+                  live_factory=None) -> Session:
+    """`live_factory(folder)` returns a LiveSpeakers to run on the far-end audio, or None."""
     started = datetime.now(timezone.utc)
     folder = new_meeting_dir(root, title, started)
     meta = {
@@ -30,14 +33,26 @@ def start_session(root: Path, title: str, extra_meta: dict | None = None, record
     write_json_atomic(folder / "meta.json", meta)
     if recording_factory is None:
         from .recorder import Recording as recording_factory
-    rec = recording_factory(folder / "audio")
+    live = None
+    if live_factory is not None:
+        try:
+            live = live_factory(folder)
+        except Exception as exc:  # live naming is a convenience; never block the recording
+            meta.setdefault("calendar_warnings", []).append(
+                f"live speaker naming unavailable: {type(exc).__name__}: {exc}")
+    rec = (recording_factory(folder / "audio", on_others_audio=live.feed) if live
+           else recording_factory(folder / "audio"))
     try:
+        if live:
+            live.start()
         rec.start()
     except Exception as exc:
+        if live:
+            live.stop()
         meta.update(status="failed", warnings=[f"could not start capture: {type(exc).__name__}: {exc}"])
         write_json_atomic(folder / "meta.json", meta)
         raise
-    return Session(folder, meta, rec)
+    return Session(folder, meta, rec, live)
 
 
 def finish_session(session: Session, stop_reason: str = "") -> dict:
@@ -45,6 +60,12 @@ def finish_session(session: Session, stop_reason: str = "") -> dict:
 
     duration, stats = session.recording.stop()
     warnings = capture_warnings(duration, stats) + list(session.meta.get("calendar_warnings", []))
+    if session.live is not None:
+        session.live.stop()
+        voices = session.live.tracker.voices.values()
+        session.meta["live_voices"] = {"heard": len(voices), "named": sum(1 for v in voices if v.name)}
+        if session.live.errors:
+            warnings.append(f"live speaker naming: {session.live.errors} window(s) could not be fingerprinted")
     session.meta.update(
         status="recorded",
         ended_at=datetime.now(timezone.utc).isoformat(),

@@ -34,6 +34,10 @@ class Config:
     diarize: bool = False
     # After a diarized meeting is transcribed, pop up a window to name its new speakers.
     prompt_for_names: bool = True
+    # With diarize on: pop up a naming window during the call when a new far-end voice is heard.
+    live_naming: bool = True
+    # How alike two voice fingerprints must be (cosine, 0-1) to count as the same person.
+    voice_match_threshold: float = 0.55
 
 
 def load_config(root: Path) -> Config:

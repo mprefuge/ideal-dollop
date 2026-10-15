@@ -48,7 +48,8 @@ def write_transcript(folder: Path, meta: dict, segments: list[Segment], warnings
 
 def transcribe_meeting(folder: Path, model, model_name: str = DEFAULT_MODEL,
                        language: str | None = None, diarizer: Callable | None = None,
-                       my_name: str = "Me", my_emails: list[str] | None = None) -> dict:
+                       my_name: str = "Me", my_emails: list[str] | None = None,
+                       embedder: Callable | None = None, voice_threshold: float = 0.55) -> dict:
     """Transcribe both channels, optionally split the far end by speaker, and write outputs.
 
     `diarizer` takes 16 kHz far-end audio and returns diarize.Turn objects.
@@ -61,6 +62,7 @@ def transcribe_meeting(folder: Path, model, model_name: str = DEFAULT_MODEL,
     warnings = list(meta.get("capture_warnings", []))  # recomputed, so re-runs never duplicate
 
     per_channel = {}
+    live_auto: dict[str, str] = {}
     for channel in ("mic", "others"):
         audio = load_channel(audio_dir, channel)
         diarize_this = diarizer is not None and channel == "others"
@@ -69,6 +71,8 @@ def transcribe_meeting(folder: Path, model, model_name: str = DEFAULT_MODEL,
             try:
                 segs = assign_speakers(segs, diarizer(audio))
                 meta["diarized"] = True
+                if embedder is not None:
+                    live_auto = _names_from_call(folder, segs, audio, embedder, voice_threshold, warnings)
             except Exception as exc:
                 warnings.append(f"speaker separation failed, far end left as one speaker: "
                                 f"{type(exc).__name__}: {exc}")
@@ -81,6 +85,9 @@ def transcribe_meeting(folder: Path, model, model_name: str = DEFAULT_MODEL,
 
     # Names: automatic ones first, then anything the user set with `rename`, which always wins.
     auto, source = calendar_names(segments, meta.get("calendar_event"), my_emails or [])
+    if live_auto:
+        auto.update(live_auto)  # names you gave during the call beat calendar guesses
+        source = "named during the call" + (f"; {source}" if source else "")
     if my_name and my_name != "Me":
         auto["Me"] = my_name
     user_set = meta.get("speaker_names_user", {})
@@ -100,3 +107,26 @@ def transcribe_meeting(folder: Path, model, model_name: str = DEFAULT_MODEL,
     )
     write_json_atomic(meta_path, meta)
     return meta
+
+
+def _names_from_call(folder: Path, segs: list[Segment], audio, embedder, threshold: float,
+                     warnings: list[str]) -> dict[str, str]:
+    """Match final speakers to voices named in the live naming window during the call."""
+    import numpy as np
+
+    from .live import live_names, match_final_speakers
+
+    try:
+        named = live_names(folder)
+        if not named:
+            return {}
+        per_speaker: dict[str, list] = {}
+        for s in segs:
+            if s.label:
+                a, b = int(s.start * WHISPER_RATE), int(s.end * WHISPER_RATE)
+                per_speaker.setdefault(s.label, []).append(audio[a:b])
+        speaker_audio = {sid: np.concatenate(parts)[: 30 * WHISPER_RATE] for sid, parts in per_speaker.items()}
+        return match_final_speakers(speaker_audio, named, embedder, threshold)
+    except Exception as exc:
+        warnings.append(f"could not apply names given during the call: {type(exc).__name__}: {exc}")
+        return {}

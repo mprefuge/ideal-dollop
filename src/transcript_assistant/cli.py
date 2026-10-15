@@ -25,22 +25,48 @@ def _load_engines(args, cfg):
 
     print(f"Loading {args.model} on {args.device} ({args.compute_type})...")
     model = load_model(args.model, args.device, args.compute_type)
-    diarizer = None
+    diarizer = embedder = None
     if args.diarize or cfg.diarize:
         from .diarize import load_pipeline, run_pipeline
+        from .live import load_embedder
 
         print("Loading speaker separation model...")
         pipeline = load_pipeline(device=args.device)
         diarizer = lambda audio: run_pipeline(pipeline, audio)  # noqa: E731
-    return model, diarizer
+        try:
+            embedder = load_embedder(device=args.device)  # matches names given during the call
+        except Exception as exc:
+            print(f"warning: voice fingerprint model unavailable ({exc}); names from the call won't carry over",
+                  file=sys.stderr)
+    return model, diarizer, embedder
 
 
 def _transcribe_one(folder: Path, engines, args, cfg) -> dict:
     from .transcribe import transcribe_meeting
 
-    model, diarizer = engines
+    model, diarizer, embedder = engines
     return transcribe_meeting(folder, model, args.model, args.language or cfg.language,
-                              diarizer=diarizer, my_name=cfg.my_name, my_emails=cfg.my_emails)
+                              diarizer=diarizer, my_name=cfg.my_name, my_emails=cfg.my_emails,
+                              embedder=embedder, voice_threshold=cfg.voice_match_threshold)
+
+
+def _live_factory(args, cfg, root: Path):
+    """Factory for mid-call naming, or None when it's off. The fingerprint model loads on first use."""
+    if not ((args.diarize or cfg.diarize) and cfg.live_naming):
+        return None
+    from .live import LiveSpeakers, launch_voice_dialog, load_embedder
+
+    holder: dict = {}
+    lock = threading.Lock()
+
+    def embed(audio):
+        with lock:
+            if "fn" not in holder:
+                holder["fn"] = load_embedder(device=args.device)
+        return holder["fn"](audio)
+
+    return lambda folder: LiveSpeakers(folder, embed, on_new_voice=lambda f, vid: launch_voice_dialog(root, f, vid),
+                                       threshold=cfg.voice_match_threshold)
 
 
 def _transcribe(folders: list[Path], args) -> int:
@@ -72,7 +98,8 @@ def cmd_record(args) -> int:
 
     root: Path = args.root
     session = start_session(root, args.title, {"consent_confirmed": True, "keep_audio": args.keep_audio,
-                                               "trigger": "manual"})
+                                               "trigger": "manual"},
+                            live_factory=_live_factory(args, load_config(root), root))
     rec = session.recording
     print(f"Recording to {session.folder}\nPress Ctrl+C to stop.")
     limit = args.max_minutes * 60 if args.max_minutes else None
@@ -141,7 +168,7 @@ def cmd_watch(args) -> int:
     calendar = (CalendarSource(cfg.ics_urls, root / ".cache", cfg.calendar_refresh_minutes)
                 if cfg.ics_urls else None)
 
-    watcher = Watcher(root, cfg, default_mic_reader(), calendar)
+    watcher = Watcher(root, cfg, default_mic_reader(), calendar, live_factory=_live_factory(args, cfg, root))
     worker = TranscriptionWorker(
         root,
         load_model=lambda: _load_engines(args, cfg),
@@ -202,6 +229,15 @@ def cmd_rename(args) -> int:
         return 1
     for sid in sorted({s.speaker for s in load_segments(folder)}):
         print(f"{sid}: {names.get(sid, sid)}")
+    return 0
+
+
+def cmd_name_voice(args) -> int:
+    from .live_dialog import run_voice_dialog
+
+    cfg = load_config(args.root)
+    name = run_voice_dialog(args.root, Path(args.folder), args.voice_id, cfg.my_emails)
+    print(f"{args.voice_id}: {name or '(skipped)'}")
     return 0
 
 
@@ -303,6 +339,11 @@ def build_parser() -> argparse.ArgumentParser:
     ns = sub.add_parser("name-speakers", help="Open the who-is-speaking dialog for a meeting")
     ns.add_argument("folder")
     ns.set_defaults(func=cmd_name_speakers)
+
+    nv = sub.add_parser("name-voice", help=argparse.SUPPRESS)  # opened by live naming during a call
+    nv.add_argument("folder")
+    nv.add_argument("voice_id")
+    nv.set_defaults(func=cmd_name_voice)
 
     ic = sub.add_parser("init-config", help="Write a default config.json if none exists")
     ic.set_defaults(func=cmd_init_config)

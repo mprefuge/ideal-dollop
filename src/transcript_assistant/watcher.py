@@ -36,8 +36,9 @@ class Watcher:
                  notify: Callable[[str], None] = lambda msg: None,
                  clock: Callable[[], float] = time.monotonic,
                  wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 recording_factory=None):
+                 recording_factory=None, live_factory=None):
         self.root = root
+        self.live_factory = live_factory
         self.cfg = cfg
         self.read_mic = read_mic
         self.calendar = calendar
@@ -122,7 +123,7 @@ class Watcher:
             "calendar_warnings": cal_warnings,
         }
         try:
-            self.session = start_session(self.root, title, extra, self.recording_factory)
+            self.session = start_session(self.root, title, extra, self.recording_factory, self.live_factory)
         except Exception as exc:
             log.exception("could not start recording")
             self.notify(f"Could not start recording: {exc}")

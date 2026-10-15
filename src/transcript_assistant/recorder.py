@@ -36,6 +36,7 @@ class _Channel:
     stats: ChannelStats
     thread: threading.Thread | None = None
     listener: object = None  # optional callable(np.ndarray) that sees every block written
+    fallback: object = None  # device to try if `device` can't be opened (same .recorder() interface)
 
 
 def _com_init() -> None:
@@ -46,11 +47,63 @@ def _com_init() -> None:
         ctypes.windll.ole32.CoInitializeEx(None, 0)
 
 
+class PortAudioMic:
+    """The default microphone through PortAudio (sounddevice).
+
+    soundcard asserts that a device's shared-mode format is 32-bit float
+    WAVEFORMATEXTENSIBLE and raises a bare AssertionError for mics that report
+    anything else. PortAudio converts whatever the device delivers.
+    """
+
+    name = "default microphone (PortAudio)"
+
+    def recorder(self, samplerate: int, blocksize: int):
+        return _PortAudioRecorder(samplerate, blocksize)
+
+
+class _PortAudioRecorder:
+    def __init__(self, samplerate: int, blocksize: int):
+        self.samplerate, self.blocksize = samplerate, blocksize
+        self.stream = None
+
+    def __enter__(self):
+        import sounddevice as sd
+
+        self.stream = sd.InputStream(samplerate=self.samplerate, blocksize=self.blocksize,
+                                     channels=1, dtype="float32")
+        self.stream.start()
+        return self
+
+    def record(self, numframes: int):
+        data, _overflowed = self.stream.read(numframes)  # dropped input is padded by frames_to_pad
+        return data
+
+    def __exit__(self, *exc):
+        self.stream.stop()
+        self.stream.close()
+        return False
+
+
+def _open(ch: _Channel, block: int):
+    try:
+        ctx = ch.device.recorder(samplerate=CAPTURE_RATE, blocksize=block)
+        return ctx, ctx.__enter__()
+    except Exception as exc:
+        if ch.fallback is None:
+            raise
+        first = f"{type(exc).__name__}: {exc}".rstrip(": ")
+        ctx = ch.fallback.recorder(samplerate=CAPTURE_RATE, blocksize=block)
+        rec = ctx.__enter__()
+        ch.stats.device = f"{getattr(ch.fallback, 'name', ch.fallback)} (fallback; {ch.stats.device} failed: {first})"
+        return ctx, rec
+
+
 def _capture(ch: _Channel, t0: float, stop: threading.Event) -> None:
     _com_init()
     block = int(CAPTURE_RATE * BLOCK_SECONDS)
     try:
-        with ch.device.recorder(samplerate=CAPTURE_RATE, blocksize=block) as rec:
+        ctx, rec = _open(ch, block)
+        try:
             while not stop.is_set():
                 data = to_mono(rec.record(numframes=block))
                 pad = frames_to_pad(ch.writer.frames_written, len(data), time.monotonic() - t0)
@@ -63,8 +116,10 @@ def _capture(ch: _Channel, t0: float, stop: threading.Event) -> None:
                 ch.writer.write(data)
                 if ch.listener is not None:
                     ch.listener(data)
+        finally:
+            ctx.__exit__(None, None, None)
     except Exception as exc:  # surfaced in meta.json, never swallowed
-        ch.stats.error = f"{type(exc).__name__}: {exc}"
+        ch.stats.error = f"{type(exc).__name__}: {exc}".rstrip(": ")
     finally:
         ch.writer.close()
 
@@ -95,7 +150,8 @@ class Recording:
         for name, dev in devices.items():
             ch = _Channel(name, dev, ChunkWriter(self.audio_dir, name),
                           ChannelStats(name, device=str(getattr(dev, "name", dev))),
-                          listener=self.on_others_audio if name == "others" else None)
+                          listener=self.on_others_audio if name == "others" else None,
+                          fallback=PortAudioMic() if name == "mic" else None)
             ch.thread = threading.Thread(target=_capture, args=(ch, self.started_monotonic, self._stop),
                                          name=f"capture-{name}", daemon=True)
             self.channels.append(ch)
@@ -113,6 +169,9 @@ class Recording:
 
     def any_failed(self) -> bool:
         return any(c.stats.error for c in self.channels)
+
+    def all_failed(self) -> bool:
+        return bool(self.channels) and all(c.stats.error for c in self.channels)
 
     def failure_detail(self) -> str:
         return "; ".join(f"{c.name}: {c.stats.error}" for c in self.channels if c.stats.error)

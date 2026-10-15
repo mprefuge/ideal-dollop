@@ -154,6 +154,7 @@ class FakeRecording:
         self.audio_dir = audio_dir
         self.started = self.stopped = False
         self.fail = False
+        self.fail_all = True
 
     def start(self):
         self.started = True
@@ -165,6 +166,9 @@ class FakeRecording:
 
     def any_failed(self):
         return self.fail
+
+    def all_failed(self):
+        return self.fail and self.fail_all
 
     def failure_detail(self):
         return "mic: OSError: device gone" if self.fail else ""
@@ -279,6 +283,16 @@ def test_channel_failure_stops_recording(tmp_path):
     h.advance(1)
     assert h.w.state == SUPPRESSED
     assert read_json(h.recorded[0] / "meta.json")["stop_reason"] == "capture channel failed (mic: OSError: device gone)"
+
+
+def test_one_failed_channel_keeps_recording_the_other(tmp_path):
+    h = Harness(tmp_path)
+    h.uses = [MicUse(ZOOM, True)]
+    h.advance(6)
+    h.recordings[0].fail, h.recordings[0].fail_all = True, False
+    h.advance(5)
+    assert h.w.state == RECORDING
+    assert sum("still recording the other side" in n for n in h.notes) == 1  # warned once, not every tick
 
 
 def test_mic_read_error_is_survivable(tmp_path):

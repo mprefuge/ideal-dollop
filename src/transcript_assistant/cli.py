@@ -104,13 +104,17 @@ def cmd_record(args) -> int:
     print(f"Recording to {session.folder}\nPress Ctrl+C to stop.")
     limit = args.max_minutes * 60 if args.max_minutes else None
     reason = "stopped by user"
+    warned = False
     try:
         while True:
             time.sleep(1)
-            if rec.any_failed():
-                print("A capture channel failed; stopping.", file=sys.stderr)
-                reason = "capture channel failed"
+            if rec.all_failed():
+                print(f"Audio capture failed ({rec.failure_detail()}); stopping.", file=sys.stderr)
+                reason = f"capture channel failed ({rec.failure_detail()})"
                 break
+            if rec.any_failed() and not warned:
+                warned = True
+                print(f"warning: {rec.failure_detail()}; still recording the other side", file=sys.stderr)
             if limit and time.monotonic() - rec.started_monotonic >= limit:
                 print("Reached --max-minutes; stopping.")
                 reason = "reached --max-minutes"

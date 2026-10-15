@@ -53,6 +53,7 @@ class Watcher:
         self._held_since: float | None = None
         self._last_seen = 0.0
         self._started = 0.0
+        self._partial_warned = False
         self._lock = threading.RLock()
 
     # --- loop ------------------------------------------------------------
@@ -68,9 +69,16 @@ class Watcher:
             if self.state == RECORDING:
                 if apps:
                     self._last_seen = t
-                if self.session and self.session.recording.any_failed():
-                    detail = self.session.recording.failure_detail()
-                    self.notify(f"Recording stopped: an audio channel failed ({detail})")
+                rec = self.session.recording if self.session else None
+                if rec and rec.any_failed() and not rec.all_failed() and not self._partial_warned:
+                    # One side still records; the error lands in the meeting's warnings.
+                    self._partial_warned = True
+                    detail = rec.failure_detail()
+                    log.warning("capture channel failed, still recording the other: %s", detail)
+                    self.notify(f"Audio channel failed ({detail}); still recording the other side")
+                if rec and rec.all_failed():
+                    detail = rec.failure_detail()
+                    self.notify(f"Recording stopped: audio capture failed ({detail})")
                     self._stop(f"capture channel failed ({detail})", next_state=SUPPRESSED)
                 elif not apps and t - self._last_seen >= self.cfg.stop_after_seconds:
                     self._stop("meeting app released the microphone", next_state=IDLE)
@@ -131,6 +139,7 @@ class Watcher:
             self.state = SUPPRESSED
             return
         self.state = RECORDING
+        self._partial_warned = False
         self._started = self._last_seen = t
         log.info("Recording %s (%s) to %s", title, ", ".join(apps), self.session.folder)
         self.notify(f"Recording: {title}")

@@ -48,28 +48,30 @@ def _com_init() -> None:
 
 
 class PortAudioMic:
-    """The default microphone through PortAudio (sounddevice).
+    """A microphone through PortAudio (sounddevice).
 
     soundcard asserts that a device's shared-mode format is 32-bit float
     WAVEFORMATEXTENSIBLE and raises a bare AssertionError for mics that report
     anything else. PortAudio converts whatever the device delivers.
     """
 
-    name = "default microphone (PortAudio)"
+    def __init__(self, device: str = ""):
+        self.device = device or None  # name fragment; None means the Windows default
+        self.name = f"{device or 'default microphone'} (PortAudio)"
 
     def recorder(self, samplerate: int, blocksize: int):
-        return _PortAudioRecorder(samplerate, blocksize)
+        return _PortAudioRecorder(samplerate, blocksize, self.device)
 
 
 class _PortAudioRecorder:
-    def __init__(self, samplerate: int, blocksize: int):
-        self.samplerate, self.blocksize = samplerate, blocksize
+    def __init__(self, samplerate: int, blocksize: int, device: str | None = None):
+        self.samplerate, self.blocksize, self.device = samplerate, blocksize, device
         self.stream = None
 
     def __enter__(self):
         import sounddevice as sd
 
-        self.stream = sd.InputStream(samplerate=self.samplerate, blocksize=self.blocksize,
+        self.stream = sd.InputStream(samplerate=self.samplerate, blocksize=self.blocksize, device=self.device,
                                      channels=1, dtype="float32")
         self.stream.start()
         return self
@@ -130,10 +132,29 @@ def _zeros(n: int):
     return np.zeros(n, dtype=np.float32)
 
 
+def pick_devices(speaker_device: str = "", mic_device: str = ""):
+    """(output to loop back, microphone): the Windows defaults unless a name fragment is configured."""
+    import soundcard as sc
+
+    speaker = _find(sc.all_speakers(), speaker_device, "speaker_device") if speaker_device else sc.default_speaker()
+    mic = _find(sc.all_microphones(), mic_device, "mic_device") if mic_device else sc.default_microphone()
+    return speaker, mic
+
+
+def _find(devices, fragment: str, setting: str):
+    hits = [d for d in devices if fragment.lower() in d.name.lower()]
+    if len(hits) != 1:
+        names = ", ".join(d.name for d in (hits or devices))
+        raise ValueError(f"{setting} {fragment!r} matches {len(hits)} devices; pick one of: {names}")
+    return hits[0]
+
+
 @dataclass
 class Recording:
     audio_dir: Path
     on_others_audio: object = None  # callable(np.ndarray) fed every far-end block, e.g. live naming
+    speaker_device: str = ""
+    mic_device: str = ""
     started_monotonic: float = 0.0
     channels: list[_Channel] = field(default_factory=list)
     _stop: threading.Event = field(default_factory=threading.Event)
@@ -141,17 +162,17 @@ class Recording:
     def start(self) -> None:
         import soundcard as sc
 
-        speaker = sc.default_speaker()
+        speaker, mic = pick_devices(self.speaker_device, self.mic_device)
         devices = {
-            "others": sc.get_microphone(id=str(speaker.name), include_loopback=True),
-            "mic": sc.default_microphone(),
+            "others": sc.get_microphone(id=speaker.id, include_loopback=True),
+            "mic": mic,
         }
         self.started_monotonic = time.monotonic()
         for name, dev in devices.items():
             ch = _Channel(name, dev, ChunkWriter(self.audio_dir, name),
                           ChannelStats(name, device=str(getattr(dev, "name", dev))),
                           listener=self.on_others_audio if name == "others" else None,
-                          fallback=PortAudioMic() if name == "mic" else None)
+                          fallback=PortAudioMic(self.mic_device) if name == "mic" else None)
             ch.thread = threading.Thread(target=_capture, args=(ch, self.started_monotonic, self._stop),
                                          name=f"capture-{name}", daemon=True)
             self.channels.append(ch)

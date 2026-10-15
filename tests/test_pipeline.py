@@ -261,3 +261,24 @@ def test_mic_falls_back_when_soundcard_rejects_the_format(tmp_path):
 def test_mic_error_is_reported_when_fallback_also_fails(tmp_path):
     stats = _run_capture(tmp_path, _FakeDev("Array Mic", fail=True), _FakeDev("PortAudio mic", fail=True))
     assert stats.error == "AssertionError"
+
+
+def test_device_names_must_match_exactly_one(monkeypatch):
+    from transcript_assistant.recorder import _find
+
+    devs = [SimpleNamespace(name="Headphones (Galaxy Buds3 Pro Stereo)"),
+            SimpleNamespace(name="Headset (Galaxy Buds3 Pro Hands-Free)"),
+            SimpleNamespace(name="Speakers (Realtek(R) Audio)")]
+    assert _find(devs, "hands-free", "speaker_device").name.startswith("Headset")
+    with pytest.raises(ValueError, match="matches 2 devices"):
+        _find(devs, "Buds3", "speaker_device")
+    with pytest.raises(ValueError, match="matches 0 devices"):
+        _find(devs, "Jabra", "speaker_device")
+
+
+def test_device_settings_are_valid_config(tmp_path):
+    from transcript_assistant.config import load_config
+
+    (tmp_path / "config.json").write_text('{"speaker_device": "Hands-Free", "mic_device": "Microphone Array"}')
+    cfg = load_config(tmp_path)
+    assert (cfg.speaker_device, cfg.mic_device) == ("Hands-Free", "Microphone Array")

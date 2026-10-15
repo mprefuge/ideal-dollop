@@ -1,4 +1,4 @@
-"""Command line entry point: record, watch, transcribe, rename, list, purge-audio, devices."""
+"""Command line entry point: record, watch, transcribe, rename, name-speakers, list, purge-audio, devices."""
 
 from __future__ import annotations
 
@@ -99,6 +99,14 @@ def cmd_record(args) -> int:
     code = 0
     if not args.no_transcribe:
         code = _transcribe([folder], args)
+        cfg = load_config(root)
+        if code == 0 and cfg.prompt_for_names:
+            from .speakers import should_prompt
+
+            if should_prompt(folder):
+                from .speaker_dialog import run_dialog
+
+                run_dialog(root, folder, cfg.my_emails)
     rebuild_index(root)
     return code
 
@@ -114,6 +122,7 @@ WATCH_CONSENT_PROMPT = (
 def cmd_watch(args) -> int:
     from .calendar_match import CalendarSource
     from .detector import default_mic_reader
+    from .speakers import launch_dialog
     from .watcher import TranscriptionWorker, Watcher, pending_meetings, recover_interrupted
 
     if not args.consent_confirmed:
@@ -138,6 +147,7 @@ def cmd_watch(args) -> int:
         load_model=lambda: _load_engines(args, cfg),
         transcribe=lambda folder, engines: _transcribe_one(folder, engines, args, cfg),
         notify=lambda msg: watcher.notify(msg),
+        after=(lambda folder: launch_dialog(root, folder)) if cfg.prompt_for_names else None,
     )
     watcher.on_recorded = worker.submit
     worker.start()
@@ -172,41 +182,35 @@ def cmd_init_config(args) -> int:
 
 
 def cmd_rename(args) -> int:
-    from .merge import Segment
-    from .transcribe import write_transcript
+    from .speakers import apply_names, load_segments
 
     folder = Path(args.folder)
-    meta = read_json(folder / "meta.json")
-    tpath = folder / "transcript.json"
-    if not tpath.exists():
+    if not (folder / "transcript.json").exists():
         print("This meeting has not been transcribed yet.", file=sys.stderr)
         return 1
-    segments = [Segment.from_dict(d) for d in read_json(tpath)["segments"]]
-    ids = sorted({s.speaker for s in segments})
     changes = {}
     for pair in args.names:
         sid, sep, name = pair.partition("=")
-        sid, name = sid.strip(), name.strip()
-        if not sep or sid not in ids:
-            print(f"Unknown speaker {sid!r}. Speakers in this meeting: {', '.join(ids)}", file=sys.stderr)
+        if not sep:
+            print(f"Expected ID=NAME, got {pair!r}", file=sys.stderr)
             return 1
-        changes[sid] = name
-    user_set = dict(meta.get("speaker_names_user", {}))
-    names = dict(meta.get("speaker_names", {}))
-    for sid, name in changes.items():
-        if name:
-            user_set[sid] = names[sid] = name
-        else:  # "Speaker 2=" clears a name back to the id
-            user_set.pop(sid, None)
-            names.pop(sid, None)
-    meta["speaker_names_user"] = user_set
-    meta["speaker_names"] = names
-    write_transcript(folder, meta, segments, meta.get("warnings", []))
-    from .store import write_json_atomic
-
-    write_json_atomic(folder / "meta.json", meta)
-    for sid in ids:
+        changes[sid.strip()] = name.strip()
+    try:
+        names = apply_names(folder, changes)
+    except KeyError as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 1
+    for sid in sorted({s.speaker for s in load_segments(folder)}):
         print(f"{sid}: {names.get(sid, sid)}")
+    return 0
+
+
+def cmd_name_speakers(args) -> int:
+    from .speaker_dialog import run_dialog
+
+    cfg = load_config(args.root)
+    outcome = run_dialog(args.root, Path(args.folder), cfg.my_emails)
+    print(f"Speaker names: {outcome}")
     return 0
 
 
@@ -295,6 +299,10 @@ def build_parser() -> argparse.ArgumentParser:
     rn.add_argument("folder")
     rn.add_argument("names", nargs="+", metavar="ID=NAME")
     rn.set_defaults(func=cmd_rename)
+
+    ns = sub.add_parser("name-speakers", help="Open the who-is-speaking dialog for a meeting")
+    ns.add_argument("folder")
+    ns.set_defaults(func=cmd_name_speakers)
 
     ic = sub.add_parser("init-config", help="Write a default config.json if none exists")
     ic.set_defaults(func=cmd_init_config)

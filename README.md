@@ -69,6 +69,8 @@ transcript-assistant rename "<meeting folder>" "Speaker 1=Dana Lee" "Speaker 2=S
 transcript-assistant rename "<meeting folder>" "Speaker 2="      # back to "Speaker 2"
 ```
 
+When a meeting with separated speakers finishes transcribing, a "Who is speaking?" window pops up for any speaker without a name. It shows how long each one talked and a few of their lines, and has a Play button that plays a few seconds of their voice. The name box offers the meeting's invitees first, then people you've named in earlier meetings, or you can type a new name. Giving two speakers the same name merges them, which fixes the common case of one person split in two. "Later" leaves them numbered, and "Don't ask for this meeting" stops the prompt. Reopen it any time with `transcript-assistant name-speakers "<meeting folder>"`, or set `"prompt_for_names": false` to turn the pop-up off. It appears after the meeting, not during it, because speakers are separated once the recording is complete.
+
 Names you set survive re-transcription. `transcript.json` keeps both the stable `speaker_id` and the display `speaker` for each line.
 
 ### Consent

@@ -32,6 +32,8 @@ class Config:
     my_emails: list[str] = field(default_factory=list)
     # Separate individual speakers on the far end (needs `pip install -e .[diarize]` and HF_TOKEN).
     diarize: bool = False
+    # After a diarized meeting is transcribed, pop up a window to name its new speakers.
+    prompt_for_names: bool = True
 
 
 def load_config(root: Path) -> Config:

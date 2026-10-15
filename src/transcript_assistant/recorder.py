@@ -114,6 +114,9 @@ class Recording:
     def any_failed(self) -> bool:
         return any(c.stats.error for c in self.channels)
 
+    def failure_detail(self) -> str:
+        return "; ".join(f"{c.name}: {c.stats.error}" for c in self.channels if c.stats.error)
+
 
 def capture_warnings(duration_s: float, stats: list[ChannelStats]) -> list[str]:
     """Flag recordings that look wrong instead of letting them pass silently."""

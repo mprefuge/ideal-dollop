@@ -69,8 +69,9 @@ class Watcher:
                 if apps:
                     self._last_seen = t
                 if self.session and self.session.recording.any_failed():
-                    self.notify("Recording stopped: an audio channel failed (see warnings)")
-                    self._stop("capture channel failed", next_state=SUPPRESSED)
+                    detail = self.session.recording.failure_detail()
+                    self.notify(f"Recording stopped: an audio channel failed ({detail})")
+                    self._stop(f"capture channel failed ({detail})", next_state=SUPPRESSED)
                 elif not apps and t - self._last_seen >= self.cfg.stop_after_seconds:
                     self._stop("meeting app released the microphone", next_state=IDLE)
                 elif self.cfg.max_minutes and t - self._started >= self.cfg.max_minutes * 60:

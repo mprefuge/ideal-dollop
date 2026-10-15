@@ -166,6 +166,9 @@ class FakeRecording:
     def any_failed(self):
         return self.fail
 
+    def failure_detail(self):
+        return "mic: OSError: device gone" if self.fail else ""
+
 
 class Harness:
     def __init__(self, tmp_path, calendar=None, cfg=None):
@@ -275,7 +278,7 @@ def test_channel_failure_stops_recording(tmp_path):
     h.recordings[0].fail = True
     h.advance(1)
     assert h.w.state == SUPPRESSED
-    assert read_json(h.recorded[0] / "meta.json")["stop_reason"] == "capture channel failed"
+    assert read_json(h.recorded[0] / "meta.json")["stop_reason"] == "capture channel failed (mic: OSError: device gone)"
 
 
 def test_mic_read_error_is_survivable(tmp_path):

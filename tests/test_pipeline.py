@@ -189,3 +189,24 @@ def test_record_refuses_without_consent(tmp_path, monkeypatch):
 def test_transcribe_requires_target():
     with pytest.raises(SystemExit):
         cli.main(["transcribe"])
+
+
+def test_cuda_dll_dirs_registered_only_on_windows(tmp_path, monkeypatch):
+    import os
+    import site
+    import sys
+
+    from transcript_assistant.transcribe import add_cuda_dll_dirs
+
+    (tmp_path / "nvidia" / "cublas" / "bin").mkdir(parents=True)
+    (tmp_path / "nvidia" / "cudnn" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(tmp_path)])
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path / "none"))
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert add_cuda_dll_dirs() == []
+    seen = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "add_dll_directory", seen.append, raising=False)
+    monkeypatch.setenv("PATH", "")
+    assert len(add_cuda_dll_dirs()) == 2 and len(seen) == 2
+    assert "cublas" in os.environ["PATH"]

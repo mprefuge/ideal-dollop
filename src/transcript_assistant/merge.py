@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 SPEAKER_LABELS = {"mic": "Me", "others": "Others"}
@@ -14,15 +14,26 @@ class Segment:
     end: float
     text: str
     channel: str  # "mic" or "others"
+    label: str | None = None  # e.g. "Speaker 2" after diarization
+    words: list[tuple[float, float, str]] = field(default_factory=list, repr=False)
 
     @property
     def speaker(self) -> str:
-        return SPEAKER_LABELS.get(self.channel, self.channel)
+        """Stable speaker id; display names are applied on top of this (see `rename`)."""
+        return self.label or SPEAKER_LABELS.get(self.channel, self.channel)
 
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["speaker"] = self.speaker
-        return d
+    def to_dict(self, names: dict[str, str] | None = None) -> dict:
+        return {
+            "start": self.start, "end": self.end, "text": self.text, "channel": self.channel,
+            "speaker_id": self.speaker,
+            "speaker": (names or {}).get(self.speaker, self.speaker),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Segment":
+        default = SPEAKER_LABELS.get(d["channel"], d["channel"])
+        sid = d.get("speaker_id", d.get("speaker", default))
+        return cls(d["start"], d["end"], d["text"], d["channel"], None if sid == default else sid)
 
 
 def _overlap(a: Segment, b: Segment) -> float:
@@ -69,7 +80,9 @@ def fmt_ts(seconds: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def render_markdown(title: str, started_at: str, segments: list[Segment], warnings: list[str]) -> str:
+def render_markdown(title: str, started_at: str, segments: list[Segment], warnings: list[str],
+                    names: dict[str, str] | None = None) -> str:
+    names = names or {}
     lines = [f"# {title}", "", f"Started: {started_at}", ""]
     if warnings:
         lines += ["> **Capture warnings**", ">"] + [f"> - {w}" for w in warnings] + [""]
@@ -78,8 +91,9 @@ def render_markdown(title: str, started_at: str, segments: list[Segment], warnin
         text = seg.text.strip()
         if not text:
             continue
-        if seg.speaker != prev:
-            lines += ["", f"**{seg.speaker}** [{fmt_ts(seg.start)}]"]
-            prev = seg.speaker
+        who = names.get(seg.speaker, seg.speaker)
+        if who != prev:
+            lines += ["", f"**{who}** [{fmt_ts(seg.start)}]"]
+            prev = who
         lines.append(text)
     return "\n".join(lines).strip() + "\n"

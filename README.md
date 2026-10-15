@@ -49,6 +49,28 @@ Add your calendars' secret ICS links to `ics_urls` in `config.json`. In Outlook 
 
 Put `[no record]` or `#norecord` in an event's title or description and `watch` will not record that meeting (`skip_keywords` in `config.json`).
 
+### Who said what
+
+The mic channel is always you. Set `my_name` in `config.json` (for example `"Micah"`) to show your name instead of "Me", and list your addresses in `my_emails` so calendar matching can tell you apart from the other attendees.
+
+By default everyone on the far end is labeled "Others". To split them into Speaker 1, Speaker 2, and so on, turn on speaker separation. It runs pyannote's diarization model locally on the GPU:
+
+```
+pip install -e .[diarize]
+setx HF_TOKEN hf_...        # a free Hugging Face read token
+```
+
+Accept the terms for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0` on huggingface.co (the models are gated), then set `"diarize": true` in `config.json` or pass `--diarize`. If separation fails, the transcript is still written with the far end as one speaker and a warning.
+
+Speakers are named automatically only when the calendar leaves no doubt: exactly one other person invited and one far-end voice heard. Everything else stays numbered, because a confident wrong name is worse than a number. Name them yourself afterwards:
+
+```
+transcript-assistant rename "<meeting folder>" "Speaker 1=Dana Lee" "Speaker 2=Sam Ortiz"
+transcript-assistant rename "<meeting folder>" "Speaker 2="      # back to "Speaker 2"
+```
+
+Names you set survive re-transcription. `transcript.json` keeps both the stable `speaker_id` and the display `speaker` for each line.
+
 ### Consent
 
 `record` asks you to confirm that everyone has been told the meeting is recorded. California and several other states require every participant's consent; `--consent-confirmed` skips the prompt once you have already said so in the meeting.
@@ -74,7 +96,7 @@ Capture problems are written to `meta.json` and shown at the top of the transcri
 
 ## Roadmap
 
-Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2 (this): automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3: speaker diarization within the Others channel using attendee names, summaries and action items. See `docs/architecture.md`.
+Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2: automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3 (this): speaker separation on the far end, calendar-based naming, `rename`. Summaries are deliberately not included. See `docs/architecture.md`.
 
 ## Tests
 
@@ -83,4 +105,4 @@ pip install -e .[dev]
 pytest
 ```
 
-The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, and the watch state machine, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.
+The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, the watch state machine, speaker assignment, naming and rename, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.

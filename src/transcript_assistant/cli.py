@@ -1,4 +1,4 @@
-"""Command line entry point: record, transcribe, list, purge-audio, devices."""
+"""Command line entry point: record, watch, transcribe, rename, list, purge-audio, devices."""
 
 from __future__ import annotations
 
@@ -19,16 +19,38 @@ CONSENT_PROMPT = (
 )
 
 
-def _transcribe(folders: list[Path], args) -> int:
-    from .transcribe import load_model, transcribe_meeting
+def _load_engines(args, cfg):
+    """Whisper model plus, when enabled, a diarizer callable. Loaded once and reused."""
+    from .transcribe import load_model
 
     print(f"Loading {args.model} on {args.device} ({args.compute_type})...")
     model = load_model(args.model, args.device, args.compute_type)
+    diarizer = None
+    if args.diarize or cfg.diarize:
+        from .diarize import load_pipeline, run_pipeline
+
+        print("Loading speaker separation model...")
+        pipeline = load_pipeline(device=args.device)
+        diarizer = lambda audio: run_pipeline(pipeline, audio)  # noqa: E731
+    return model, diarizer
+
+
+def _transcribe_one(folder: Path, engines, args, cfg) -> dict:
+    from .transcribe import transcribe_meeting
+
+    model, diarizer = engines
+    return transcribe_meeting(folder, model, args.model, args.language or cfg.language,
+                              diarizer=diarizer, my_name=cfg.my_name, my_emails=cfg.my_emails)
+
+
+def _transcribe(folders: list[Path], args) -> int:
+    cfg = load_config(args.root)
+    engines = _load_engines(args, cfg)
     failures = 0
     for folder in folders:
         print(f"Transcribing {folder.name}...")
         try:
-            meta = transcribe_meeting(folder, model, args.model, args.language)
+            meta = _transcribe_one(folder, engines, args, cfg)
         except Exception as exc:
             failures += 1
             print(f"  FAILED: {type(exc).__name__}: {exc}. Audio is untouched; retry with "
@@ -92,7 +114,6 @@ WATCH_CONSENT_PROMPT = (
 def cmd_watch(args) -> int:
     from .calendar_match import CalendarSource
     from .detector import default_mic_reader
-    from .transcribe import load_model, transcribe_meeting
     from .watcher import TranscriptionWorker, Watcher, pending_meetings, recover_interrupted
 
     if not args.consent_confirmed:
@@ -108,15 +129,14 @@ def cmd_watch(args) -> int:
         handlers=[logging.FileHandler(root / "watch.log", encoding="utf-8"), logging.StreamHandler()],
     )
     cfg = load_config(root)
-    language = args.language or cfg.language
     calendar = (CalendarSource(cfg.ics_urls, root / ".cache", cfg.calendar_refresh_minutes)
                 if cfg.ics_urls else None)
 
     watcher = Watcher(root, cfg, default_mic_reader(), calendar)
     worker = TranscriptionWorker(
         root,
-        load_model=lambda: load_model(args.model, args.device, args.compute_type),
-        transcribe=lambda folder, model: transcribe_meeting(folder, model, args.model, language),
+        load_model=lambda: _load_engines(args, cfg),
+        transcribe=lambda folder, engines: _transcribe_one(folder, engines, args, cfg),
         notify=lambda msg: watcher.notify(msg),
     )
     watcher.on_recorded = worker.submit
@@ -148,6 +168,45 @@ def cmd_watch(args) -> int:
 def cmd_init_config(args) -> int:
     path, created = write_default_config(args.root)
     print(("Created " if created else "Already exists, left unchanged: ") + str(path))
+    return 0
+
+
+def cmd_rename(args) -> int:
+    from .merge import Segment
+    from .transcribe import write_transcript
+
+    folder = Path(args.folder)
+    meta = read_json(folder / "meta.json")
+    tpath = folder / "transcript.json"
+    if not tpath.exists():
+        print("This meeting has not been transcribed yet.", file=sys.stderr)
+        return 1
+    segments = [Segment.from_dict(d) for d in read_json(tpath)["segments"]]
+    ids = sorted({s.speaker for s in segments})
+    changes = {}
+    for pair in args.names:
+        sid, sep, name = pair.partition("=")
+        sid, name = sid.strip(), name.strip()
+        if not sep or sid not in ids:
+            print(f"Unknown speaker {sid!r}. Speakers in this meeting: {', '.join(ids)}", file=sys.stderr)
+            return 1
+        changes[sid] = name
+    user_set = dict(meta.get("speaker_names_user", {}))
+    names = dict(meta.get("speaker_names", {}))
+    for sid, name in changes.items():
+        if name:
+            user_set[sid] = names[sid] = name
+        else:  # "Speaker 2=" clears a name back to the id
+            user_set.pop(sid, None)
+            names.pop(sid, None)
+    meta["speaker_names_user"] = user_set
+    meta["speaker_names"] = names
+    write_transcript(folder, meta, segments, meta.get("warnings", []))
+    from .store import write_json_atomic
+
+    write_json_atomic(folder / "meta.json", meta)
+    for sid in ids:
+        print(f"{sid}: {names.get(sid, sid)}")
     return 0
 
 
@@ -208,6 +267,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--device", default="cuda", help="cuda (default) or cpu")
         sp.add_argument("--compute-type", default="float16", help="float16 on GPU; int8 on CPU")
         sp.add_argument("--language", default=None, help="e.g. en; auto-detected if omitted")
+        sp.add_argument("--diarize", action="store_true",
+                        help="Separate individual speakers on the far end (also: diarize in config.json)")
 
     r = sub.add_parser("record", help="Record a meeting, then transcribe it")
     r.add_argument("--title", default="Meeting")
@@ -229,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--no-tray", action="store_true", help="Run in the console without a tray icon")
     model_opts(w)
     w.set_defaults(func=cmd_watch)
+
+    rn = sub.add_parser("rename", help='Name speakers, e.g. rename FOLDER "Speaker 1=Dana Lee"')
+    rn.add_argument("folder")
+    rn.add_argument("names", nargs="+", metavar="ID=NAME")
+    rn.set_defaults(func=cmd_rename)
 
     ic = sub.add_parser("init-config", help="Write a default config.json if none exists")
     ic.set_defaults(func=cmd_init_config)

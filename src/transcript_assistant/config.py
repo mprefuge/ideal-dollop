@@ -27,6 +27,11 @@ class Config:
     max_minutes: int = 240
     poll_seconds: float = 2.0
     language: str | None = None
+    # How you appear in transcripts, and your addresses so calendar matching can tell you apart.
+    my_name: str = "Me"
+    my_emails: list[str] = field(default_factory=list)
+    # Separate individual speakers on the far end (needs `pip install -e .[diarize]` and HF_TOKEN).
+    diarize: bool = False
 
 
 def load_config(root: Path) -> Config:

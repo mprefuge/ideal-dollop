@@ -210,3 +210,75 @@ def test_cuda_dll_dirs_registered_only_on_windows(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     assert len(add_cuda_dll_dirs()) == 2 and len(seen) == 2
     assert "cublas" in os.environ["PATH"]
+
+
+# --- mic fallback -------------------------------------------------------------
+
+class _FakeRec:
+    def __init__(self, fail):
+        self.fail = fail
+
+    def __enter__(self):
+        if self.fail:
+            raise AssertionError
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def record(self, numframes):
+        return np.full((numframes, 1), 0.1, dtype=np.float32)
+
+
+class _FakeDev:
+    def __init__(self, name, fail):
+        self.name, self.fail = name, fail
+
+    def recorder(self, samplerate, blocksize):
+        return _FakeRec(self.fail)
+
+
+def _run_capture(tmp_path, device, fallback):
+    import threading
+
+    from transcript_assistant.audio import ChunkWriter
+    from transcript_assistant.recorder import ChannelStats, _capture, _Channel
+
+    ch = _Channel("mic", device, ChunkWriter(tmp_path, "mic"), ChannelStats("mic", device=device.name),
+                  fallback=fallback)
+    stop = threading.Event()
+    stop.set()  # open the device, then exit the loop at once
+    _capture(ch, 0.0, stop)
+    return ch.stats
+
+
+def test_mic_falls_back_when_soundcard_rejects_the_format(tmp_path):
+    stats = _run_capture(tmp_path, _FakeDev("Array Mic", fail=True), _FakeDev("PortAudio mic", fail=False))
+    assert stats.error is None
+    assert stats.device.startswith("PortAudio mic (fallback; Array Mic failed: AssertionError)")
+
+
+def test_mic_error_is_reported_when_fallback_also_fails(tmp_path):
+    stats = _run_capture(tmp_path, _FakeDev("Array Mic", fail=True), _FakeDev("PortAudio mic", fail=True))
+    assert stats.error == "AssertionError"
+
+
+def test_device_names_must_match_exactly_one(monkeypatch):
+    from transcript_assistant.recorder import _find
+
+    devs = [SimpleNamespace(name="Headphones (Galaxy Buds3 Pro Stereo)"),
+            SimpleNamespace(name="Headset (Galaxy Buds3 Pro Hands-Free)"),
+            SimpleNamespace(name="Speakers (Realtek(R) Audio)")]
+    assert _find(devs, "hands-free", "speaker_device").name.startswith("Headset")
+    with pytest.raises(ValueError, match="matches 2 devices"):
+        _find(devs, "Buds3", "speaker_device")
+    with pytest.raises(ValueError, match="matches 0 devices"):
+        _find(devs, "Jabra", "speaker_device")
+
+
+def test_device_settings_are_valid_config(tmp_path):
+    from transcript_assistant.config import load_config
+
+    (tmp_path / "config.json").write_text('{"speaker_device": "Hands-Free", "mic_device": "Microphone Array"}')
+    cfg = load_config(tmp_path)
+    assert (cfg.speaker_device, cfg.mic_device) == ("Hands-Free", "Microphone Array")

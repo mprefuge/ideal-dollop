@@ -36,6 +36,10 @@ class Config:
     prompt_for_names: bool = True
     # With diarize on: pop up a naming window during the call when a new far-end voice is heard.
     live_naming: bool = True
+    # Part of a device name (see `devices`) to record instead of the Windows defaults. With
+    # Bluetooth earbuds, calls often use the "Hands-Free" device while the default is "Stereo".
+    speaker_device: str = ""
+    mic_device: str = ""
     # How alike two voice fingerprints must be (cosine, 0-1) to count as the same person.
     voice_match_threshold: float = 0.55
 

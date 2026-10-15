@@ -50,6 +50,14 @@ def _transcribe_one(folder: Path, engines, args, cfg) -> dict:
                               embedder=embedder, voice_threshold=cfg.voice_match_threshold)
 
 
+def _recording_factory(cfg):
+    from functools import partial
+
+    from .recorder import Recording
+
+    return partial(Recording, speaker_device=cfg.speaker_device, mic_device=cfg.mic_device)
+
+
 def _live_factory(args, cfg, root: Path):
     """Factory for mid-call naming, or None when it's off. The fingerprint model loads on first use."""
     if not ((args.diarize or cfg.diarize) and cfg.live_naming):
@@ -97,20 +105,26 @@ def cmd_record(args) -> int:
     from .session import finish_session, start_session
 
     root: Path = args.root
+    cfg = load_config(root)
     session = start_session(root, args.title, {"consent_confirmed": True, "keep_audio": args.keep_audio,
                                                "trigger": "manual"},
-                            live_factory=_live_factory(args, load_config(root), root))
+                            recording_factory=_recording_factory(cfg),
+                            live_factory=_live_factory(args, cfg, root))
     rec = session.recording
     print(f"Recording to {session.folder}\nPress Ctrl+C to stop.")
     limit = args.max_minutes * 60 if args.max_minutes else None
     reason = "stopped by user"
+    warned = False
     try:
         while True:
             time.sleep(1)
-            if rec.any_failed():
-                print("A capture channel failed; stopping.", file=sys.stderr)
-                reason = "capture channel failed"
+            if rec.all_failed():
+                print(f"Audio capture failed ({rec.failure_detail()}); stopping.", file=sys.stderr)
+                reason = f"capture channel failed ({rec.failure_detail()})"
                 break
+            if rec.any_failed() and not warned:
+                warned = True
+                print(f"warning: {rec.failure_detail()}; still recording the other side", file=sys.stderr)
             if limit and time.monotonic() - rec.started_monotonic >= limit:
                 print("Reached --max-minutes; stopping.")
                 reason = "reached --max-minutes"
@@ -168,7 +182,8 @@ def cmd_watch(args) -> int:
     calendar = (CalendarSource(cfg.ics_urls, root / ".cache", cfg.calendar_refresh_minutes)
                 if cfg.ics_urls else None)
 
-    watcher = Watcher(root, cfg, default_mic_reader(), calendar, live_factory=_live_factory(args, cfg, root))
+    watcher = Watcher(root, cfg, default_mic_reader(), calendar, recording_factory=_recording_factory(cfg),
+                      live_factory=_live_factory(args, cfg, root))
     worker = TranscriptionWorker(
         root,
         load_model=lambda: _load_engines(args, cfg),
@@ -288,11 +303,21 @@ def cmd_purge_audio(args) -> int:
     return 0
 
 
-def cmd_devices(_args) -> int:
+def cmd_devices(args) -> int:
     import soundcard as sc
 
-    print(f"Default speaker (recorded as 'others' via loopback): {sc.default_speaker().name}")
-    print(f"Default microphone (recorded as 'mic'): {sc.default_microphone().name}")
+    from .recorder import pick_devices
+
+    cfg = load_config(args.root)
+    speaker, mic = pick_devices(cfg.speaker_device, cfg.mic_device)
+    print(f"Recorded as 'others' (loopback of this output): {speaker.name}")
+    print(f"Recorded as 'mic': {mic.name}")
+    print("\nOutputs (for speaker_device in config.json):")
+    for d in sc.all_speakers():
+        print(f"  {d.name}")
+    print("\nMicrophones (for mic_device in config.json):")
+    for d in sc.all_microphones():
+        print(f"  {d.name}")
     return 0
 
 

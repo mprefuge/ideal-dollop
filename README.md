@@ -49,6 +49,32 @@ Add your calendars' secret ICS links to `ics_urls` in `config.json`. In Outlook 
 
 Put `[no record]` or `#norecord` in an event's title or description and `watch` will not record that meeting (`skip_keywords` in `config.json`).
 
+### Who said what
+
+The mic channel is always you. Set `my_name` in `config.json` (for example `"Micah"`) to show your name instead of "Me", and list your addresses in `my_emails` so calendar matching can tell you apart from the other attendees.
+
+By default everyone on the far end is labeled "Others". To split them into Speaker 1, Speaker 2, and so on, turn on speaker separation. It runs pyannote's diarization model locally on the GPU:
+
+```
+pip install -e .[diarize]
+setx HF_TOKEN hf_...        # a free Hugging Face read token
+```
+
+Accept the terms for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0` on huggingface.co (the models are gated), then set `"diarize": true` in `config.json` or pass `--diarize`. If separation fails, the transcript is still written with the far end as one speaker and a warning.
+
+Speakers are named automatically only when the calendar leaves no doubt: exactly one other person invited and one far-end voice heard. Everything else stays numbered, because a confident wrong name is worse than a number. Name them yourself afterwards:
+
+```
+transcript-assistant rename "<meeting folder>" "Speaker 1=Dana Lee" "Speaker 2=Sam Ortiz"
+transcript-assistant rename "<meeting folder>" "Speaker 2="      # back to "Speaker 2"
+```
+
+**During the call.** With speaker separation on, a small "Who is it?" window pops up within about 10 to 20 seconds of a new voice on the far end. It has a Play button for that voice and a name box offering invitees, names already used on this call, and people from earlier meetings. Picking a name already used on the call tells it that's the same person. The window runs in its own process, so ignoring it never affects the recording. It works by comparing a voice fingerprint of each 3-second stretch of far-end audio with the voices heard so far, and announces a voice only after three consistent stretches. It can still occasionally ask twice about the same person, especially when people talk over each other; giving both the same name fixes that. When the meeting is transcribed, each final speaker is matched to those fingerprints, so the names carry into the transcript. Set `"live_naming": false` to turn the mid-call window off, or adjust `voice_match_threshold` (default 0.55) if it asks too often (lower it) or merges different people (raise it).
+
+**After the call.** When a meeting with separated speakers finishes transcribing, a "Who is speaking?" window pops up for any speaker without a name. It shows how long each one talked and a few of their lines, and has a Play button that plays a few seconds of their voice. The name box offers the meeting's invitees first, then people you've named in earlier meetings, or you can type a new name. Giving two speakers the same name merges them, which fixes the common case of one person split in two. "Later" leaves them numbered, and "Don't ask for this meeting" stops the prompt. Reopen it any time with `transcript-assistant name-speakers "<meeting folder>"`, or set `"prompt_for_names": false` to turn the pop-up off. This only appears for speakers still unnamed after the mid-call window.
+
+Names you set survive re-transcription. `transcript.json` keeps both the stable `speaker_id` and the display `speaker` for each line.
+
 ### Consent
 
 `record` asks you to confirm that everyone has been told the meeting is recorded. California and several other states require every participant's consent; `--consent-confirmed` skips the prompt once you have already said so in the meeting.
@@ -74,7 +100,7 @@ Capture problems are written to `meta.json` and shown at the top of the transcri
 
 ## Roadmap
 
-Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2 (this): automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3: speaker diarization within the Others channel using attendee names, summaries and action items. See `docs/architecture.md`.
+Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2: automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3 (this): speaker separation on the far end, calendar-based naming, `rename`. Summaries are deliberately not included. See `docs/architecture.md`.
 
 ## Tests
 
@@ -83,4 +109,4 @@ pip install -e .[dev]
 pytest
 ```
 
-The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, and the watch state machine, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.
+The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, the watch state machine, speaker assignment, naming and rename, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.

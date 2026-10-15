@@ -35,6 +35,7 @@ class _Channel:
     writer: ChunkWriter
     stats: ChannelStats
     thread: threading.Thread | None = None
+    listener: object = None  # optional callable(np.ndarray) that sees every block written
 
 
 def _com_init() -> None:
@@ -54,9 +55,14 @@ def _capture(ch: _Channel, t0: float, stop: threading.Event) -> None:
                 data = to_mono(rec.record(numframes=block))
                 pad = frames_to_pad(ch.writer.frames_written, len(data), time.monotonic() - t0)
                 if pad:
-                    ch.writer.write(_zeros(pad))
+                    silence = _zeros(pad)
+                    ch.writer.write(silence)
                     ch.stats.padded_frames += pad
+                    if ch.listener is not None:
+                        ch.listener(silence)
                 ch.writer.write(data)
+                if ch.listener is not None:
+                    ch.listener(data)
     except Exception as exc:  # surfaced in meta.json, never swallowed
         ch.stats.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -72,6 +78,7 @@ def _zeros(n: int):
 @dataclass
 class Recording:
     audio_dir: Path
+    on_others_audio: object = None  # callable(np.ndarray) fed every far-end block, e.g. live naming
     started_monotonic: float = 0.0
     channels: list[_Channel] = field(default_factory=list)
     _stop: threading.Event = field(default_factory=threading.Event)
@@ -87,7 +94,8 @@ class Recording:
         self.started_monotonic = time.monotonic()
         for name, dev in devices.items():
             ch = _Channel(name, dev, ChunkWriter(self.audio_dir, name),
-                          ChannelStats(name, device=str(getattr(dev, "name", dev))))
+                          ChannelStats(name, device=str(getattr(dev, "name", dev))),
+                          listener=self.on_others_audio if name == "others" else None)
             ch.thread = threading.Thread(target=_capture, args=(ch, self.started_monotonic, self._stop),
                                          name=f"capture-{name}", daemon=True)
             self.channels.append(ch)

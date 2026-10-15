@@ -27,6 +27,17 @@ class Config:
     max_minutes: int = 240
     poll_seconds: float = 2.0
     language: str | None = None
+    # How you appear in transcripts, and your addresses so calendar matching can tell you apart.
+    my_name: str = "Me"
+    my_emails: list[str] = field(default_factory=list)
+    # Separate individual speakers on the far end (needs `pip install -e .[diarize]` and HF_TOKEN).
+    diarize: bool = False
+    # After a diarized meeting is transcribed, pop up a window to name its new speakers.
+    prompt_for_names: bool = True
+    # With diarize on: pop up a naming window during the call when a new far-end voice is heard.
+    live_naming: bool = True
+    # How alike two voice fingerprints must be (cosine, 0-1) to count as the same person.
+    voice_match_threshold: float = 0.55
 
 
 def load_config(root: Path) -> Config:

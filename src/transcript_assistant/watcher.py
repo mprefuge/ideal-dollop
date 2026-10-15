@@ -36,8 +36,9 @@ class Watcher:
                  notify: Callable[[str], None] = lambda msg: None,
                  clock: Callable[[], float] = time.monotonic,
                  wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 recording_factory=None):
+                 recording_factory=None, live_factory=None):
         self.root = root
+        self.live_factory = live_factory
         self.cfg = cfg
         self.read_mic = read_mic
         self.calendar = calendar
@@ -122,7 +123,7 @@ class Watcher:
             "calendar_warnings": cal_warnings,
         }
         try:
-            self.session = start_session(self.root, title, extra, self.recording_factory)
+            self.session = start_session(self.root, title, extra, self.recording_factory, self.live_factory)
         except Exception as exc:
             log.exception("could not start recording")
             self.notify(f"Could not start recording: {exc}")
@@ -216,8 +217,10 @@ class TranscriptionWorker(threading.Thread):
     """Transcribes finished recordings one at a time; loads the model on first use."""
 
     def __init__(self, root: Path, load_model: Callable[[], object], transcribe: Callable[[Path, object], dict],
-                 notify: Callable[[str], None] = lambda msg: None):
+                 notify: Callable[[str], None] = lambda msg: None,
+                 after: Callable[[Path], object] | None = None):
         super().__init__(name="transcriber", daemon=True)
+        self.after = after
         self.root = root
         self.load_model = load_model
         self.transcribe = transcribe
@@ -238,6 +241,11 @@ class TranscriptionWorker(threading.Thread):
                     self._model = self.load_model()
                 meta = self.transcribe(folder, self._model)
                 self.notify(f"Transcript ready: {meta.get('title', folder.name)}")
+                if self.after is not None:
+                    try:
+                        self.after(folder)
+                    except Exception:
+                        log.exception("post-transcription step failed for %s", folder)
             except Exception as exc:
                 # Audio is untouched and status stays 'recorded', so `transcribe --pending` retries it.
                 log.exception("transcription failed for %s", folder)

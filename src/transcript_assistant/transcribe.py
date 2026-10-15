@@ -13,7 +13,32 @@ from .store import read_json, write_json_atomic
 DEFAULT_MODEL = "large-v3-turbo"
 
 
+def add_cuda_dll_dirs() -> list[str]:
+    """Let Windows find the cuBLAS/cuDNN DLLs installed by the nvidia-* pip wheels.
+
+    Python on Windows does not search PATH-less package folders for DLLs, so
+    ctranslate2 fails with "cublas64_12.dll not found" unless each
+    site-packages/nvidia/*/bin folder is registered. No-op elsewhere.
+    """
+    import os
+    import site
+    import sys
+
+    if sys.platform != "win32":
+        return []
+    added = []
+    roots = site.getsitepackages() + [site.getusersitepackages()]
+    for root in roots:
+        for bin_dir in sorted(Path(root).glob("nvidia/*/bin")):
+            os.add_dll_directory(str(bin_dir))
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+            added.append(str(bin_dir))
+    return added
+
+
 def load_model(model_name: str = DEFAULT_MODEL, device: str = "cuda", compute_type: str = "float16"):
+    if device == "cuda":
+        add_cuda_dll_dirs()
     from faster_whisper import WhisperModel
 
     return WhisperModel(model_name, device=device, compute_type=compute_type)

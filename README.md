@@ -9,7 +9,7 @@ It records two channels: the system output via Windows loopback, labeled **Other
 Requires Python 3.10+ and a current NVIDIA driver. faster-whisper needs the CUDA 12 cuBLAS and cuDNN 9 libraries; the simplest route is the pip wheels:
 
 ```
-py -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -e .[dev]
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*
@@ -56,8 +56,9 @@ The mic channel is always you. Set `my_name` in `config.json` (for example `"Mic
 By default everyone on the far end is labeled "Others". To split them into Speaker 1, Speaker 2, and so on, turn on speaker separation. It runs pyannote's diarization model locally on the GPU:
 
 ```
+pip install torch --index-url https://download.pytorch.org/whl/cu124   # CUDA build; plain pip gets CPU-only torch on Windows
 pip install -e .[diarize]
-setx HF_TOKEN hf_...        # a free Hugging Face read token
+setx HF_TOKEN hf_...        # a free Hugging Face read token; open a new terminal afterwards
 ```
 
 Accept the terms for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0` on huggingface.co (the models are gated), then set `"diarize": true` in `config.json` or pass `--diarize`. If separation fails, the transcript is still written with the far end as one speaker and a warning.

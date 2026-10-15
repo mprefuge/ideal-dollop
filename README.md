@@ -32,6 +32,25 @@ transcript-assistant list                             # all meetings, with captu
 transcript-assistant purge-audio --older-than 7       # dry run; add --yes to delete
 ```
 
+### Automatic recording
+
+```
+transcript-assistant init-config      # writes config.json next to your transcripts
+transcript-assistant watch            # tray icon; records meetings on its own
+```
+
+`watch` reads which apps currently hold the microphone, the same information Windows uses for its mic-in-use indicator (a read-only registry lookup). When Zoom, Teams, Webex, Slack, GoTo, RingCentral, Discord or a browser holds the mic for 5 seconds, it starts recording; when no meeting app has held it for 60 seconds, it stops and transcribes in the background. Mute doesn't count as releasing the mic in these apps, so muted stretches keep recording. The tray icon turns red while recording and has Stop recording this meeting (it won't restart until that meeting ends), Pause auto-record for 1 hour, Resume, Open transcripts folder, and Quit. A recording that a crash or shutdown cut off is picked up and transcribed the next time `watch` starts.
+
+To start it at login, put a shortcut in `shell:startup` whose target is `<repo>\.venv\Scripts\pythonw.exe -m transcript_assistant.cli watch --consent-confirmed` (the windowless `pythonw` cannot show the consent prompt, so the flag records that you already agreed). Logs go to `watch.log` in the transcripts folder.
+
+### Calendar matching (optional, read-only)
+
+Add your calendars' secret ICS links to `ics_urls` in `config.json`. In Outlook on the web: Settings > Calendar > Shared calendars > Publish a calendar, choose "Can view all details", and copy the ICS link. In Google Calendar: Settings for the calendar > "Secret address in iCal format". When a recording starts, the event in progress (or starting within 10 minutes) names the folder and transcript, and its organizer and attendees go into `meta.json`; when two events overlap, the one whose join link matches the app in use wins. The links are refreshed at most every 15 minutes and cached under `.cache` with hashed file names, so a dropped connection doesn't stop matching. Treat these links like passwords: anyone with one can read that calendar.
+
+Put `[no record]` or `#norecord` in an event's title or description and `watch` will not record that meeting (`skip_keywords` in `config.json`).
+
+### Consent
+
 `record` asks you to confirm that everyone has been told the meeting is recorded. California and several other states require every participant's consent; `--consent-confirmed` skips the prompt once you have already said so in the meeting.
 
 If CUDA is not working, `--device cpu --compute-type int8` runs on the CPU, much more slowly. A failed transcription never deletes audio; rerun `transcribe` on the folder.
@@ -55,7 +74,7 @@ Capture problems are written to `meta.json` and shown at the top of the transcri
 
 ## Roadmap
 
-Phase 1 (this): manual record, local GPU transcription, per-meeting folders. Phase 2: detect meetings automatically from which app opens the mic, tray icon, and read-only calendar matching for titles and attendees. Phase 3: speaker diarization within the Others channel, summaries and action items. See `docs/architecture.md`.
+Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2 (this): automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3: speaker diarization within the Others channel using attendee names, summaries and action items. See `docs/architecture.md`.
 
 ## Tests
 
@@ -64,4 +83,4 @@ pip install -e .[dev]
 pytest
 ```
 
-The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules with a fake model; they need no sound card or GPU.
+The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, and the watch state machine, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.

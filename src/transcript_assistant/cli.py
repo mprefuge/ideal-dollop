@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import asdict
-from datetime import datetime, timezone
+import logging
+import threading
 from pathlib import Path
 
-from . import __version__
-from .store import (audio_purge_candidates, default_root, new_meeting_dir, purge_audio, read_json,
-                    rebuild_index, write_json_atomic)
+from .config import load_config, write_default_config
+from .store import audio_purge_candidates, default_root, purge_audio, read_json, rebuild_index
 from .transcribe import DEFAULT_MODEL
 
 CONSENT_PROMPT = (
@@ -47,56 +46,109 @@ def cmd_record(args) -> int:
             print("Not recording.")
             return 1
 
-    from .recorder import Recording, capture_warnings
+    from .session import finish_session, start_session
 
     root: Path = args.root
-    started = datetime.now(timezone.utc)
-    folder = new_meeting_dir(root, args.title, started)
-    meta = {
-        "title": args.title,
-        "started_at": started.isoformat(),
-        "status": "recording",
-        "consent_confirmed": True,
-        "keep_audio": args.keep_audio,
-        "tool_version": __version__,
-    }
-    write_json_atomic(folder / "meta.json", meta)
-
-    rec = Recording(folder / "audio")
-    rec.start()
-    print(f"Recording to {folder}\nPress Ctrl+C to stop.")
+    session = start_session(root, args.title, {"consent_confirmed": True, "keep_audio": args.keep_audio,
+                                               "trigger": "manual"})
+    rec = session.recording
+    print(f"Recording to {session.folder}\nPress Ctrl+C to stop.")
     limit = args.max_minutes * 60 if args.max_minutes else None
+    reason = "stopped by user"
     try:
         while True:
             time.sleep(1)
             if rec.any_failed():
                 print("A capture channel failed; stopping.", file=sys.stderr)
+                reason = "capture channel failed"
                 break
             if limit and time.monotonic() - rec.started_monotonic >= limit:
                 print("Reached --max-minutes; stopping.")
+                reason = "reached --max-minutes"
                 break
     except KeyboardInterrupt:
         pass
 
-    duration, stats = rec.stop()
-    warnings = capture_warnings(duration, stats)
-    meta.update(
-        status="recorded",
-        ended_at=datetime.now(timezone.utc).isoformat(),
-        duration_s=round(duration, 1),
-        channels=[asdict(s) for s in stats],
-        capture_warnings=warnings,
-        warnings=warnings,
-    )
-    write_json_atomic(folder / "meta.json", meta)
-    for w in warnings:
+    meta = finish_session(session, reason)
+    for w in meta["warnings"]:
         print(f"warning: {w}")
+    folder = session.folder
 
     code = 0
     if not args.no_transcribe:
         code = _transcribe([folder], args)
     rebuild_index(root)
     return code
+
+
+WATCH_CONSENT_PROMPT = (
+    "Auto-recording will capture every meeting that opens your microphone.\n"
+    "California and several other states require every participant's consent, so you\n"
+    "agree to tell participants in each meeting that it is being recorded, or to mark\n"
+    "the calendar event with a skip keyword (see config.json). Agree? [y/N] "
+)
+
+
+def cmd_watch(args) -> int:
+    from .calendar_match import CalendarSource
+    from .detector import default_mic_reader
+    from .transcribe import load_model, transcribe_meeting
+    from .watcher import TranscriptionWorker, Watcher, pending_meetings, recover_interrupted
+
+    if not args.consent_confirmed:
+        if input(WATCH_CONSENT_PROMPT).strip().lower() not in ("y", "yes"):
+            print("Not watching.")
+            return 1
+
+    root: Path = args.root
+    root.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.FileHandler(root / "watch.log", encoding="utf-8"), logging.StreamHandler()],
+    )
+    cfg = load_config(root)
+    language = args.language or cfg.language
+    calendar = (CalendarSource(cfg.ics_urls, root / ".cache", cfg.calendar_refresh_minutes)
+                if cfg.ics_urls else None)
+
+    watcher = Watcher(root, cfg, default_mic_reader(), calendar)
+    worker = TranscriptionWorker(
+        root,
+        load_model=lambda: load_model(args.model, args.device, args.compute_type),
+        transcribe=lambda folder, model: transcribe_meeting(folder, model, args.model, language),
+        notify=lambda msg: watcher.notify(msg),
+    )
+    watcher.on_recorded = worker.submit
+    worker.start()
+
+    for folder in recover_interrupted(root):
+        logging.warning("Recovered interrupted recording %s", folder.name)
+    for folder in pending_meetings(root):
+        worker.submit(folder)
+    rebuild_index(root)
+
+    stop_event = threading.Event()
+    if args.no_tray:
+        print("Watching for meetings. Press Ctrl+C to quit.")
+        try:
+            watcher.run(stop_event)
+        except KeyboardInterrupt:
+            watcher.shutdown()
+    else:
+        from .tray import run_tray
+
+        run_tray(watcher, root, stop_event)
+    if not worker.queue.empty():
+        print("Some meetings are still waiting for transcription; "
+              "they will be picked up next time, or run `transcript-assistant transcribe --pending`.")
+    return 0
+
+
+def cmd_init_config(args) -> int:
+    path, created = write_default_config(args.root)
+    print(("Created " if created else "Already exists, left unchanged: ") + str(path))
+    return 0
 
 
 def cmd_transcribe(args) -> int:
@@ -171,6 +223,15 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--pending", action="store_true", help="Every meeting recorded but not yet transcribed")
     model_opts(t)
     t.set_defaults(func=cmd_transcribe)
+
+    w = sub.add_parser("watch", help="Record meetings automatically when a meeting app opens the mic")
+    w.add_argument("--consent-confirmed", action="store_true", help="Skip the consent prompt")
+    w.add_argument("--no-tray", action="store_true", help="Run in the console without a tray icon")
+    model_opts(w)
+    w.set_defaults(func=cmd_watch)
+
+    ic = sub.add_parser("init-config", help="Write a default config.json if none exists")
+    ic.set_defaults(func=cmd_init_config)
 
     ls = sub.add_parser("list", help="List meetings and rebuild index.json")
     ls.set_defaults(func=cmd_list)

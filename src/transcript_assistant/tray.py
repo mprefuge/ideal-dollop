@@ -1,4 +1,4 @@
-"""System tray icon for `watch`: status, stop, pause, open folder, quit."""
+"""System tray icon for `watch`: status, stop, pause, question window, open folder, quit."""
 
 from __future__ import annotations
 
@@ -30,6 +30,13 @@ def run_tray(watcher: Watcher, root: Path, stop_event: threading.Event) -> None:
     def is_recording(_item=None):
         return watcher.state == RECORDING
 
+    def show_questions():
+        session = watcher.session
+        if session is not None and (session.folder / "live" / "questions.json").exists():
+            from .live_transcribe import launch_question_window
+
+            launch_question_window(root, session.folder)
+
     def quit_(icon, _item):
         stop_event.set()
         icon.stop()
@@ -38,6 +45,7 @@ def run_tray(watcher: Watcher, root: Path, stop_event: threading.Event) -> None:
         pystray.MenuItem(lambda _item: watcher.status, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Stop recording this meeting", lambda: watcher.stop_now(), enabled=is_recording),
+        pystray.MenuItem("Show questions window", show_questions, enabled=is_recording),
         pystray.MenuItem("Pause auto-record for 1 hour", lambda: watcher.pause(3600)),
         pystray.MenuItem("Resume auto-record", lambda: watcher.resume()),
         pystray.MenuItem("Open transcripts folder", lambda: _open_folder(root)),

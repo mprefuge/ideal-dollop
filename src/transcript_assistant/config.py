@@ -42,6 +42,12 @@ class Config:
     mic_device: str = ""
     # How alike two voice fingerprints must be (cosine, 0-1) to count as the same person.
     voice_match_threshold: float = 0.55
+    # Transcribe while the call is on and track the questions asked in a pop-up window. The live
+    # text uses a smaller Whisper model; the saved transcript still comes from the large one after
+    # the call. "large-v3-turbo" is more accurate live if the GPU has 6 GB or more.
+    live_transcribe: bool = True
+    live_model: str = "small"
+    question_window: bool = True
 
 
 def load_config(root: Path) -> Config:

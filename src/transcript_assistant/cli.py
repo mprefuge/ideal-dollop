@@ -1,4 +1,4 @@
-"""Command line entry point: record, watch, transcribe, rename, name-speakers, list, purge-audio, devices."""
+"""Command line entry point: record, watch, transcribe, rename, name-speakers, questions, list, purge-audio, devices."""
 
 from __future__ import annotations
 
@@ -77,6 +77,32 @@ def _live_factory(args, cfg, root: Path):
                                        threshold=cfg.voice_match_threshold)
 
 
+def _transcriber_factory(args, cfg, root: Path):
+    """Factory for live transcription and the question window, or None when it's off.
+
+    The live Whisper model loads in the transcriber's thread on the first call and is
+    kept for later meetings, so recording never waits for it.
+    """
+    if not cfg.live_transcribe:
+        return None
+    from .live_transcribe import LiveTranscriber, launch_question_window
+    from .transcribe import load_model
+
+    holder: dict = {}
+    lock = threading.Lock()
+    compute = args.compute_type if args.device == "cuda" else "int8"
+
+    def model():
+        with lock:
+            if "model" not in holder:
+                holder["model"] = load_model(cfg.live_model, args.device, compute)
+        return holder["model"]
+
+    on_start = (lambda folder: launch_question_window(root, folder)) if cfg.question_window else None
+    return lambda folder: LiveTranscriber(folder, model, language=args.language or cfg.language,
+                                          my_name=cfg.my_name, on_start=on_start)
+
+
 def _transcribe(folders: list[Path], args) -> int:
     cfg = load_config(args.root)
     engines = _load_engines(args, cfg)
@@ -109,7 +135,8 @@ def cmd_record(args) -> int:
     session = start_session(root, args.title, {"consent_confirmed": True, "keep_audio": args.keep_audio,
                                                "trigger": "manual"},
                             recording_factory=_recording_factory(cfg),
-                            live_factory=_live_factory(args, cfg, root))
+                            live_factory=_live_factory(args, cfg, root),
+                            transcriber_factory=_transcriber_factory(args, cfg, root))
     rec = session.recording
     print(f"Recording to {session.folder}\nPress Ctrl+C to stop.")
     limit = args.max_minutes * 60 if args.max_minutes else None
@@ -183,7 +210,8 @@ def cmd_watch(args) -> int:
                 if cfg.ics_urls else None)
 
     watcher = Watcher(root, cfg, default_mic_reader(), calendar, recording_factory=_recording_factory(cfg),
-                      live_factory=_live_factory(args, cfg, root))
+                      live_factory=_live_factory(args, cfg, root),
+                      transcriber_factory=_transcriber_factory(args, cfg, root))
     worker = TranscriptionWorker(
         root,
         load_model=lambda: _load_engines(args, cfg),
@@ -253,6 +281,26 @@ def cmd_name_voice(args) -> int:
     cfg = load_config(args.root)
     name = run_voice_dialog(args.root, Path(args.folder), args.voice_id, cfg.my_emails)
     print(f"{args.voice_id}: {name or '(skipped)'}")
+    return 0
+
+
+def cmd_questions(args) -> int:
+    from .question_window import run_question_window
+
+    if args.folder:
+        folder = Path(args.folder)
+    else:
+        live = [p.parent for p in sorted(args.root.glob("*/meta.json"))
+                if read_json(p).get("status") == "recording" and (p.parent / "live" / "questions.json").exists()]
+        if not live:
+            print("No meeting is being transcribed live right now; give a meeting folder to review one.",
+                  file=sys.stderr)
+            return 1
+        folder = live[-1]
+    if not (folder / "live" / "questions.json").exists():
+        print("This meeting has no live questions (live transcription was off).", file=sys.stderr)
+        return 1
+    run_question_window(folder)
     return 0
 
 
@@ -369,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
     nv.add_argument("folder")
     nv.add_argument("voice_id")
     nv.set_defaults(func=cmd_name_voice)
+
+    qs = sub.add_parser("questions", help="Open the question window (the live meeting by default)")
+    qs.add_argument("folder", nargs="?")
+    qs.set_defaults(func=cmd_questions)
 
     ic = sub.add_parser("init-config", help="Write a default config.json if none exists")
     ic.set_defaults(func=cmd_init_config)

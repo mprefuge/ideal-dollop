@@ -153,6 +153,7 @@ def _find(devices, fragment: str, setting: str):
 class Recording:
     audio_dir: Path
     on_others_audio: object = None  # callable(np.ndarray) fed every far-end block, e.g. live naming
+    on_mic_audio: object = None     # callable(np.ndarray) fed every mic block, e.g. live transcription
     speaker_device: str = ""
     mic_device: str = ""
     started_monotonic: float = 0.0
@@ -171,7 +172,7 @@ class Recording:
         for name, dev in devices.items():
             ch = _Channel(name, dev, ChunkWriter(self.audio_dir, name),
                           ChannelStats(name, device=str(getattr(dev, "name", dev))),
-                          listener=self.on_others_audio if name == "others" else None,
+                          listener=self.on_others_audio if name == "others" else self.on_mic_audio,
                           fallback=PortAudioMic(self.mic_device) if name == "mic" else None)
             ch.thread = threading.Thread(target=_capture, args=(ch, self.started_monotonic, self._stop),
                                          name=f"capture-{name}", daemon=True)

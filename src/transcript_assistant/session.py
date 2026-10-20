@@ -16,11 +16,13 @@ class Session:
     meta: dict
     recording: object  # recorder.Recording
     live: object = None  # live.LiveSpeakers while naming voices mid-call
+    transcriber: object = None  # live_transcribe.LiveTranscriber while tracking questions mid-call
 
 
 def start_session(root: Path, title: str, extra_meta: dict | None = None, recording_factory=None,
-                  live_factory=None) -> Session:
-    """`live_factory(folder)` returns a LiveSpeakers to run on the far-end audio, or None."""
+                  live_factory=None, transcriber_factory=None) -> Session:
+    """`live_factory(folder)` returns a LiveSpeakers to run on the far-end audio, or None.
+    `transcriber_factory(folder)` returns a LiveTranscriber to run on both channels, or None."""
     started = datetime.now(timezone.utc)
     folder = new_meeting_dir(root, title, started)
     meta = {
@@ -33,26 +35,47 @@ def start_session(root: Path, title: str, extra_meta: dict | None = None, record
     write_json_atomic(folder / "meta.json", meta)
     if recording_factory is None:
         from .recorder import Recording as recording_factory
-    live = None
-    if live_factory is not None:
-        try:
-            live = live_factory(folder)
-        except Exception as exc:  # live naming is a convenience; never block the recording
-            meta.setdefault("calendar_warnings", []).append(
-                f"live speaker naming unavailable: {type(exc).__name__}: {exc}")
-    rec = (recording_factory(folder / "audio", on_others_audio=live.feed) if live
-           else recording_factory(folder / "audio"))
+    live = _optional(live_factory, folder, meta, "live speaker naming")
+    transcriber = _optional(transcriber_factory, folder, meta, "live transcription")
+    listeners = {}
+    others = [f for f in (live and live.feed, transcriber and transcriber.feed_others) if f]
+    if others:
+        listeners["on_others_audio"] = others[0] if len(others) == 1 else _fan_out(others)
+    if transcriber:
+        listeners["on_mic_audio"] = transcriber.feed_mic
+    rec = recording_factory(folder / "audio", **listeners)
     try:
         if live:
             live.start()
+        if transcriber:
+            transcriber.start()
         rec.start()
     except Exception as exc:
-        if live:
-            live.stop()
+        for helper in (live, transcriber):
+            if helper:
+                helper.stop()
         meta.update(status="failed", warnings=[f"could not start capture: {type(exc).__name__}: {exc}"])
         write_json_atomic(folder / "meta.json", meta)
         raise
-    return Session(folder, meta, rec, live)
+    return Session(folder, meta, rec, live, transcriber)
+
+
+def _optional(factory, folder: Path, meta: dict, what: str):
+    """Live helpers are conveniences; a failure is noted in the meeting's warnings, never fatal."""
+    if factory is None:
+        return None
+    try:
+        return factory(folder)
+    except Exception as exc:
+        meta.setdefault("calendar_warnings", []).append(f"{what} unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _fan_out(listeners):
+    def feed(block):
+        for f in listeners:
+            f(block)
+    return feed
 
 
 def finish_session(session: Session, stop_reason: str = "") -> dict:
@@ -66,6 +89,11 @@ def finish_session(session: Session, stop_reason: str = "") -> dict:
         session.meta["live_voices"] = {"heard": len(voices), "named": sum(1 for v in voices if v.name)}
         if session.live.errors:
             warnings.append(f"live speaker naming: {session.live.errors} window(s) could not be fingerprinted")
+    if session.transcriber is not None:
+        session.transcriber.stop()
+        session.meta["live_questions"] = session.transcriber.write_summary()
+        if session.transcriber.errors:
+            warnings.append(f"live transcription: {session.transcriber.errors} utterance(s) failed")
     session.meta.update(
         status="recorded",
         ended_at=datetime.now(timezone.utc).isoformat(),

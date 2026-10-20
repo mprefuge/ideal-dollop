@@ -76,6 +76,21 @@ transcript-assistant rename "<meeting folder>" "Speaker 2="      # back to "Spea
 
 Names you set survive re-transcription. `transcript.json` keeps both the stable `speaker_id` and the display `speaker` for each line.
 
+### Live transcript and question tracker
+
+While a meeting records (by hand or through `watch`), both channels are also transcribed live and a small "Questions" window opens. It shows the current question at the top, every question asked so far below it (not answered first, then follow-up, then answered), and the last few lines of the live transcript at the bottom. Closing it never affects the recording; reopen it with `transcript-assistant questions`, or from the tray menu's Show questions window.
+
+Everything runs on this computer. The live text comes from a smaller Whisper model (`live_model`, default `small`, about 500 MB of GPU memory on top of the main model) so it keeps up in real time; the saved transcript is still made by the large model after the call. Questions are found and tracked with plain rules, not an AI model:
+
+- A sentence is a question when Whisper ends it with "?" or it opens like one ("can you", "do we", "is there", "what", ...). Tags like "right?" or "you know?" are ignored.
+- The current question is the newest one still open. Once it's answered, an earlier open question from the last 10 minutes becomes current again.
+- A question counts as answered when someone other than the asker replies with a few words that aren't themselves a question, or with a yes/no. A reply like "I'll get back to you" or "not sure" marks it follow-up instead.
+- With speaker separation off, everyone on the far end shares the "Others" label, so a reply from "Others" to an "Others" question counts only after a pause and with more words.
+
+These are guesses. Use the buttons under the current question, or right-click any row, to mark it answered, not answered, follow-up, or not a question; your marks always win and are kept. When the call ends, `questions.md` in the meeting folder lists what was asked, grouped by status, with the reply that counted.
+
+Set `"live_transcribe": false` in `config.json` to turn all of this off, `"question_window": false` to keep the live transcript (in `live/transcript.jsonl`) without the window, or `"live_model": "large-v3-turbo"` for better live accuracy if the GPU has 6 GB or more.
+
 ### Consent
 
 `record` asks you to confirm that everyone has been told the meeting is recorded. California and several other states require every participant's consent; `--consent-confirmed` skips the prompt once you have already said so in the meeting.

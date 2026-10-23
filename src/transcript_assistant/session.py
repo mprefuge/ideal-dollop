@@ -83,17 +83,27 @@ def finish_session(session: Session, stop_reason: str = "") -> dict:
 
     duration, stats = session.recording.stop()
     warnings = capture_warnings(duration, stats) + list(session.meta.get("calendar_warnings", []))
+    # The live helpers are extras: if one fails here, the meeting must still be marked recorded
+    # so it gets transcribed.
     if session.live is not None:
-        session.live.stop()
-        voices = session.live.tracker.voices.values()
-        session.meta["live_voices"] = {"heard": len(voices), "named": sum(1 for v in voices if v.name)}
+        try:
+            session.live.stop()
+            voices = session.live.tracker.voices.values()
+            session.meta["live_voices"] = {"heard": len(voices), "named": sum(1 for v in voices if v.name)}
+        except Exception as exc:
+            warnings.append(f"live speaker naming failed at the end of the call: {type(exc).__name__}: {exc}")
         if session.live.errors:
             warnings.append(f"live speaker naming: {session.live.errors} window(s) could not be fingerprinted")
     if session.transcriber is not None:
-        session.transcriber.stop()
-        session.meta["live_questions"] = session.transcriber.write_summary()
+        try:
+            session.transcriber.stop()
+            session.meta["live_questions"] = session.transcriber.write_summary()
+        except Exception as exc:
+            warnings.append(f"could not save live questions: {type(exc).__name__}: {exc}")
         if session.transcriber.errors:
-            warnings.append(f"live transcription: {session.transcriber.errors} utterance(s) failed")
+            last = getattr(session.transcriber, "last_error", "")
+            warnings.append(f"live transcription: {session.transcriber.errors} step(s) failed"
+                            + (f" (last: {last})" if last else ""))
     session.meta.update(
         status="recorded",
         ended_at=datetime.now(timezone.utc).isoformat(),

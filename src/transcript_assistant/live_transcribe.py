@@ -141,6 +141,7 @@ class LiveTranscriber:
         self.tracker = QuestionTracker()
         self.status = "starting"
         self.errors = 0
+        self.last_error = ""
         self.lines = 0
         self._model = None
         self._q: queue.Queue = queue.Queue(maxsize=1200)  # about 5 minutes of both channels
@@ -196,17 +197,29 @@ class LiveTranscriber:
             if item is None:
                 break
             channel, block = item
-            with self._skip_lock:
-                dropped, self._skipped[channel] = self._skipped[channel], 0
-            utts = self._seg[channel].skip(dropped / CAPTURE_RATE) if dropped else []
-            utts += self._seg[channel].feed(_resample_48k_to_16k(block))
-            self._handle(channel, utts)
+            # One bad block or a failed file write must never end live transcription for the call.
+            self._guard(self._process, channel, block)
         for channel, seg in self._seg.items():
-            self._handle(channel, seg.flush())
-        self._commit(final=True)
+            self._guard(self._handle, channel, seg.flush())
+        self._guard(self._commit, final=True)
         if self._model is not None:
             self.status = "call ended"
-        self._write_state()
+        self._guard(self._write_state)
+
+    def _process(self, channel: str, block: np.ndarray) -> None:
+        with self._skip_lock:
+            dropped, self._skipped[channel] = self._skipped[channel], 0
+        utts = self._seg[channel].skip(dropped / CAPTURE_RATE) if dropped else []
+        utts += self._seg[channel].feed(_resample_48k_to_16k(block))
+        self._handle(channel, utts)
+
+    def _guard(self, fn, *args, **kwargs) -> None:
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:
+            self.errors += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            log.exception("live transcription step failed; carrying on")
 
     def _handle(self, channel: str, utts: list[tuple[float, np.ndarray]]) -> None:
         for start, audio in utts:

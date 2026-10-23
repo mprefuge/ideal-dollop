@@ -322,3 +322,64 @@ def test_interrupted_recordings_are_recovered_for_transcription(tmp_path):
     meta = read_json(folder / "meta.json")
     assert meta["status"] == "recorded" and "interrupted" in meta["warnings"][0]
     assert pending_meetings(tmp_path) == [folder]
+
+
+def test_recover_leaves_a_live_recording_alone_and_finds_failed_transcriptions(tmp_path):
+    import os
+    import time as _time
+
+    from transcript_assistant.watcher import recover_missed
+
+    def meeting(name, status, age_s):
+        folder = tmp_path / name
+        (folder / "audio").mkdir(parents=True)
+        write_json_atomic(folder / "meta.json", {"title": name, "status": status})
+        chunk = folder / "audio" / "mic_0000.flac"
+        chunk.write_bytes(b"")
+        t = _time.time() - age_s
+        os.utime(chunk, (t, t))
+        return folder
+
+    crashed = meeting("2026-10-23_0900_crashed", "recording", 3600)
+    live = meeting("2026-10-23_1000_live", "recording", 5)            # audio still being written
+    active = meeting("2026-10-23_1001_active", "recording", 3600)     # the one watch is recording now
+    failed = meeting("2026-10-23_0800_failed", "recorded", 7200)      # transcription failed earlier
+    meeting("2026-10-23_0700_done", "transcribed", 9000)
+
+    assert recover_missed(tmp_path, skip=(active,), idle_s=120) == [failed, crashed]
+    assert read_json(live / "meta.json")["status"] == "recording"
+    assert read_json(active / "meta.json")["status"] == "recording"
+
+
+def test_recover_command_lists_without_transcribing(tmp_path, capsys):
+    from transcript_assistant import cli
+
+    folder = tmp_path / "2026-10-23_0800_missed"
+    folder.mkdir()
+    write_json_atomic(folder / "meta.json", {"title": "x", "status": "recorded"})
+    assert cli.main(["--root", str(tmp_path), "recover", "--list"]) == 0
+    assert "2026-10-23_0800_missed" in capsys.readouterr().out
+    assert cli.main(["--root", str(tmp_path / "empty"), "recover"]) == 0
+    assert "Nothing to recover" in capsys.readouterr().out
+
+
+def test_worker_skips_a_meeting_already_transcribed(tmp_path):
+    from transcript_assistant.watcher import TranscriptionWorker
+
+    folder = tmp_path / "m"
+    folder.mkdir()
+    write_json_atomic(folder / "meta.json", {"title": "x", "status": "recorded"})
+    done = []
+
+    def transcribe(f, model):
+        done.append(f)
+        meta = {"title": "x", "status": "transcribed"}
+        write_json_atomic(f / "meta.json", meta)
+        return meta
+
+    worker = TranscriptionWorker(tmp_path, load_model=lambda: "m", transcribe=transcribe)
+    worker.submit(folder)
+    worker.submit(folder)  # queued twice
+    worker.queue.put(None)
+    worker.run()
+    assert done == [folder]

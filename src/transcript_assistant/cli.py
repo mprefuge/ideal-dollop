@@ -191,7 +191,7 @@ def cmd_watch(args) -> int:
     from .calendar_match import CalendarSource
     from .detector import default_mic_reader
     from .speakers import launch_dialog
-    from .watcher import TranscriptionWorker, Watcher, pending_meetings, recover_interrupted
+    from .watcher import TranscriptionWorker, Watcher, pending_meetings, recover_interrupted, recover_missed
 
     if not args.consent_confirmed:
         if input(WATCH_CONSENT_PROMPT).strip().lower() not in ("y", "yes"):
@@ -220,6 +220,15 @@ def cmd_watch(args) -> int:
         after=(lambda folder: launch_dialog(root, folder)) if cfg.prompt_for_names else None,
     )
     watcher.on_recorded = worker.submit
+
+    def transcribe_missed() -> int:
+        active = (watcher.session.folder,) if watcher.session is not None else ()
+        missed = recover_missed(root, skip=active, idle_s=120)
+        for folder in missed:
+            worker.submit(folder)
+        return len(missed)
+
+    watcher.transcribe_missed = transcribe_missed
     worker.start()
 
     for folder in recover_interrupted(root):
@@ -243,6 +252,25 @@ def cmd_watch(args) -> int:
         print("Some meetings are still waiting for transcription; "
               "they will be picked up next time, or run `transcript-assistant transcribe --pending`.")
     return 0
+
+
+def cmd_recover(args) -> int:
+    from .watcher import recover_missed
+
+    root: Path = args.root
+    # Leave alone anything whose audio changed in the last 2 minutes: `watch` may be recording it.
+    folders = recover_missed(root, idle_s=120)
+    if not folders:
+        print("Nothing to recover: every finished recording has a transcript.")
+        return 0
+    print(f"Found {len(folders)} meeting(s) recorded but not transcribed:")
+    for f in folders:
+        print(f"  {f.name}")
+    if args.list:
+        return 0
+    code = _transcribe(folders, args)
+    rebuild_index(root)
+    return code
 
 
 def cmd_init_config(args) -> int:
@@ -397,6 +425,11 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--pending", action="store_true", help="Every meeting recorded but not yet transcribed")
     model_opts(t)
     t.set_defaults(func=cmd_transcribe)
+
+    rc = sub.add_parser("recover", help="Transcribe every meeting that was recorded but never transcribed")
+    rc.add_argument("--list", action="store_true", help="Only show what would be transcribed")
+    model_opts(rc)
+    rc.set_defaults(func=cmd_recover)
 
     w = sub.add_parser("watch", help="Record meetings automatically when a meeting app opens the mic")
     w.add_argument("--consent-confirmed", action="store_true", help="Skip the consent prompt")

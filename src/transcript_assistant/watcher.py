@@ -195,15 +195,23 @@ class Watcher:
             return "Watching for meetings"
 
 
-def recover_interrupted(root: Path) -> list[Path]:
-    """Meetings left in 'recording' by a crash or power loss become 'recorded' so they get transcribed."""
+def recover_interrupted(root: Path, skip: tuple[Path, ...] = (), idle_s: float | None = None) -> list[Path]:
+    """Meetings left in 'recording' by a crash or power loss become 'recorded' so they get transcribed.
+
+    `skip` holds meetings known to be recording right now. With `idle_s`, a meeting whose audio
+    changed in the last `idle_s` seconds is left alone too, since another process may still be
+    recording it.
+    """
     out = []
+    now = time.time()
     for meta_path in sorted(root.glob("*/meta.json")):
         try:
             meta = read_json(meta_path)
         except Exception:
             continue
-        if meta.get("status") != "recording":
+        if meta.get("status") != "recording" or meta_path.parent in skip:
+            continue
+        if idle_s is not None and now - last_audio_write(meta_path.parent) < idle_s:
             continue
         warn = "recording was interrupted (crash or shutdown); the end of the meeting may be missing"
         meta["status"] = "recorded"
@@ -212,6 +220,17 @@ def recover_interrupted(root: Path) -> list[Path]:
         write_json_atomic(meta_path, meta)
         out.append(meta_path.parent)
     return out
+
+
+def last_audio_write(folder: Path) -> float:
+    times = [p.stat().st_mtime for p in (folder / "audio").glob("*.flac")]
+    return max(times, default=(folder / "meta.json").stat().st_mtime)
+
+
+def recover_missed(root: Path, skip: tuple[Path, ...] = (), idle_s: float | None = None) -> list[Path]:
+    """Everything recorded but not transcribed, after un-sticking interrupted recordings."""
+    recover_interrupted(root, skip, idle_s)
+    return pending_meetings(root)
 
 
 def pending_meetings(root: Path) -> list[Path]:
@@ -248,6 +267,11 @@ class TranscriptionWorker(threading.Thread):
             folder = self.queue.get()
             if folder is None:
                 return
+            try:
+                if read_json(folder / "meta.json").get("status") != "recorded":
+                    continue  # queued twice (e.g. by "Transcribe missed meetings"); already done
+            except Exception:
+                pass
             try:
                 if self._model is None:
                     self._model = self.load_model()

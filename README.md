@@ -28,6 +28,7 @@ transcript-assistant devices
 ```
 transcript-assistant record --title "Weekly sync"     # Ctrl+C to stop; transcribes when it stops
 transcript-assistant transcribe --pending             # anything recorded but not transcribed
+transcript-assistant recover                          # same, plus recordings a crash left unfinished (--list to preview)
 transcript-assistant list                             # all meetings, with capture warnings
 transcript-assistant purge-audio --older-than 7       # dry run; add --yes to delete
 ```
@@ -39,7 +40,7 @@ transcript-assistant init-config      # writes config.json next to your transcri
 transcript-assistant watch            # tray icon; records meetings on its own
 ```
 
-`watch` reads which apps currently hold the microphone, the same information Windows uses for its mic-in-use indicator (a read-only registry lookup). When Zoom, Teams, Webex, Slack, GoTo, RingCentral, Discord or a browser holds the mic for 5 seconds, it starts recording; when no meeting app has held it for 60 seconds, it stops and transcribes in the background. Mute doesn't count as releasing the mic in these apps, so muted stretches keep recording. The tray icon turns red while recording and has Stop recording this meeting (it won't restart until that meeting ends), Pause auto-record for 1 hour, Resume, Open transcripts folder, and Quit. A recording that a crash or shutdown cut off is picked up and transcribed the next time `watch` starts.
+`watch` reads which apps currently hold the microphone, the same information Windows uses for its mic-in-use indicator (a read-only registry lookup). When Zoom, Teams, Webex, Slack, GoTo, RingCentral, Discord or a browser holds the mic for 5 seconds, it starts recording; when no meeting app has held it for 60 seconds, it stops and transcribes in the background. Mute doesn't count as releasing the mic in these apps, so muted stretches keep recording. The tray icon turns red while recording and has Stop recording this meeting (it won't restart until that meeting ends), Pause auto-record for 1 hour, Resume, Show questions window, Transcribe missed meetings, Open transcripts folder, and Quit. Transcribe missed meetings (or `recover` from the command line) finds every meeting that was recorded but never transcribed, including ones a crash left marked as still recording, and transcribes them; a recording whose audio changed in the last 2 minutes is left alone in case it is still going. A recording that a crash or shutdown cut off is picked up and transcribed the next time `watch` starts.
 
 To start it at login, put a shortcut in `shell:startup` whose target is `<repo>\.venv\Scripts\pythonw.exe -m transcript_assistant.cli watch --consent-confirmed` (the windowless `pythonw` cannot show the consent prompt, so the flag records that you already agreed). Logs go to `watch.log` in the transcripts folder.
 

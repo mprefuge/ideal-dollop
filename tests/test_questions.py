@@ -277,3 +277,58 @@ def test_both_live_helpers_share_the_far_end_audio(tmp_path):
     finish_session(session)
     assert session.live._t > 0  # live naming saw the audio too
     assert session.transcriber.lines == 1
+
+
+# --- staying alive on Windows -------------------------------------------------------
+
+def test_atomic_write_retries_while_a_reader_holds_the_file(tmp_path, monkeypatch):
+    import os
+
+    from transcript_assistant import store
+
+    real, calls = os.replace, []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) < 3:
+            raise PermissionError(13, "Access is denied")  # what Windows raises while the window reads it
+        real(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", flaky)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    store.write_json_atomic(tmp_path / "questions.json", {"ok": True})
+    assert read_json(tmp_path / "questions.json") == {"ok": True} and len(calls) == 3
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_a_failing_step_does_not_end_live_transcription(tmp_path):
+    model = ScriptModel(["What's the go-live date?", "Who signs the contract?"])
+    lt = LiveTranscriber(tmp_path, lambda: model)
+    real_commit, failed = lt._commit, []
+
+    def commit_once_broken(final=False):
+        if not failed:
+            failed.append(1)
+            raise PermissionError(13, "Access is denied")
+        real_commit(final)
+
+    lt._commit = commit_once_broken
+    lt.start()
+    feed(lt, "others", np.concatenate([tone48(2), silence48(2), tone48(2), silence48(2)]))
+    lt.stop()
+    state = read_json(tmp_path / "live" / "questions.json")
+    assert state["status"] == "call ended"
+    assert [q.text for q in load_questions(state)] == ["What's the go-live date?", "Who signs the contract?"]
+    assert lt.errors == 1 and "PermissionError" in lt.last_error
+
+
+def test_meeting_is_still_marked_recorded_when_live_questions_fail(tmp_path):
+    class Broken(LiveTranscriber):
+        def write_summary(self):
+            raise PermissionError(13, "Access is denied")
+
+    factory = lambda folder: Broken(folder, lambda: ScriptModel(["Any blockers?"]))  # noqa: E731
+    session = start_session(tmp_path, "Standup", recording_factory=FakeRec, transcriber_factory=factory)
+    meta = finish_session(session)
+    assert read_json(session.folder / "meta.json")["status"] == "recorded"
+    assert any("could not save live questions" in w for w in meta["warnings"])

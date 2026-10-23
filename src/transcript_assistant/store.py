@@ -54,11 +54,31 @@ def write_json_atomic(path: Path, data: object) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+def _replace(src: str, dst: Path, attempts: int = 40, wait_s: float = 0.05) -> None:
+    """os.replace, retried while another process has the target open.
+
+    On Windows a file that someone else is reading can't be replaced; os.replace
+    raises PermissionError (WinError 5) until they close it. The question window
+    reads questions.json and meta.json every second, and antivirus or the search
+    indexer can hold a new file briefly, so a single attempt fails now and then.
+    """
+    import time
+
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(wait_s)
 
 
 def read_json(path: Path) -> dict:

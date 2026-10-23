@@ -37,6 +37,11 @@ def run_tray(watcher: Watcher, root: Path, stop_event: threading.Event) -> None:
 
             launch_question_window(root, session.folder)
 
+    def transcribe_missed(icon, _item):
+        n = watcher.transcribe_missed() if hasattr(watcher, "transcribe_missed") else 0
+        icon.notify(f"Transcribing {n} missed meeting(s)" if n else "No missed meetings: everything is transcribed",
+                    "Transcript Assistant")
+
     def quit_(icon, _item):
         stop_event.set()
         icon.stop()
@@ -48,6 +53,7 @@ def run_tray(watcher: Watcher, root: Path, stop_event: threading.Event) -> None:
         pystray.MenuItem("Show questions window", show_questions, enabled=is_recording),
         pystray.MenuItem("Pause auto-record for 1 hour", lambda: watcher.pause(3600)),
         pystray.MenuItem("Resume auto-record", lambda: watcher.resume()),
+        pystray.MenuItem("Transcribe missed meetings", transcribe_missed),
         pystray.MenuItem("Open transcripts folder", lambda: _open_folder(root)),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", quit_),

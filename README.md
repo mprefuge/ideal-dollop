@@ -92,6 +92,19 @@ These are guesses. Use the buttons under the current question, or right-click an
 
 Set `"live_transcribe": false` in `config.json` to turn all of this off, `"question_window": false` to keep the live transcript (in `live/transcript.jsonl`) without the window, or `"live_model": "large-v3-turbo"` for better live accuracy if the GPU has 6 GB or more.
 
+### Meeting notes: who said what, questions and how they were answered, action items
+
+`meeting.md` is the file to open after a call. It is built from the final transcript, with speakers separated and named, so unlike the live window it knows who asked and who answered. It has four parts:
+
+1. **Participants**, with how long each one spoke.
+2. **The transcript**, with `[Q3]` in front of the line where question 3 was asked and `[A3]` in front of the lines that answered it.
+3. **Questions**, grouped as not answered, needs follow-up, and answered, each with the replies that followed it and who gave them. The marks you made in the question window during the call are matched to these questions by time and wording and applied here; a mark that matches nothing is kept in `meta.json` under `notes`.
+4. **Action items** as a checklist, one line each in the form `- [ ] Owner: what was said (due Friday) [00:12:03]`, ready to paste into email, Salesforce or a task list.
+
+Action items are found by rule, so expect some noise and read them before pasting. A first-person commitment ("I'll send the deck") belongs to the person who said it. A request ("Dana, can you send the contract?", "please share the link", "let me know if...") belongs to the person named in it, else the only other person on the call, else it is listed as Unassigned. A group commitment ("we need to decide by Friday", "let's schedule a review") is listed for the team. A question that got "I'll get back to you" becomes an item for whoever said that. Phrases like "can you hear me", "let's see" and "I'll be honest" are skipped.
+
+`rename` and the naming window rebuild `meeting.md` along with the transcript, so names stay consistent everywhere. `transcript.md` (the plain transcript) and `questions.md` (the live window's view) are still written.
+
 ### Consent
 
 `record` asks you to confirm that everyone has been told the meeting is recorded. California and several other states require every participant's consent; `--consent-confirmed` skips the prompt once you have already said so in the meeting.
@@ -105,8 +118,11 @@ Everything lives under `%USERPROFILE%\MeetingTranscripts` (override with `--root
 ```
 2026-10-15_0930_weekly-sync/
   meta.json         title, times, per-channel levels, warnings, status
-  transcript.md     readable, speaker-labeled, timestamped
+  meeting.md        participants, transcript with question markers, questions with replies, action items
+  transcript.md     plain transcript, speaker-labeled, timestamped
   transcript.json   segments with start/end times
+  questions.md      what the live question window saw during the call
+  live/             live transcript, voices and question marks from during the call
   audio/            mic_0000.flac, others_0000.flac, ... (5-minute chunks)
 index.json          rebuilt from every meta.json; never edit by hand
 ```
@@ -117,7 +133,7 @@ Capture problems are written to `meta.json` and shown at the top of the transcri
 
 ## Roadmap
 
-Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2: automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3 (this): speaker separation on the far end, calendar-based naming, `rename`. Summaries are deliberately not included. See `docs/architecture.md`.
+Phase 1: manual record, local GPU transcription, per-meeting folders. Phase 2: automatic detection from which app opens the mic, tray icon, read-only calendar matching. Phase 3: speaker separation on the far end, calendar-based naming, `rename`. Phase 4: live transcript and question window. Phase 5 (this): `meeting.md` with named questions, their exchanges, and rule-based action items. Summaries are deliberately not included. See `docs/architecture.md`.
 
 ## Tests
 
@@ -126,4 +142,4 @@ pip install -e .[dev]
 pytest
 ```
 
-The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, the watch state machine, speaker assignment, naming and rename, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.
+The tests cover chunking, resampling, clock padding, echo removal, merging, storage and purge rules, mic-app detection, recurring calendar events, the watch state machine, speaker assignment, naming and rename, question tracking, the post-call notes and action items, with fakes for the model, devices and clock; they need no sound card, GPU or Windows.

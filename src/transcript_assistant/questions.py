@@ -15,6 +15,10 @@ text is sent anywhere. The rules:
 * When the far end is one shared label ("Others", with speaker separation off),
   a reply from that same label counts only after a pause and with more words,
   since it might be the asker carrying on.
+* Whatever is said in reply to the newest question, for up to 40 seconds after
+  it, is kept with it as the exchange (`Question.replies`), so the notes show how
+  it was answered and not only the first words that counted. A deferral anywhere
+  in the exchange turns an automatic "answered" into "follow-up".
 
 These are guesses, so the question window lets you correct any of them; your
 marks always win (see `effective_status`).
@@ -33,8 +37,11 @@ ANSWER_WORDS = 5           # words of non-question reply that count as an answer
 GROUP_ANSWER_WORDS = 10    # ...when the asker and the replier share one label
 GROUP_PAUSE_S = 1.5        # ...and only after this long a pause
 REPEAT_WINDOW_S = 60.0     # the same person re-asking within this window is the same question
+EXCHANGE_WINDOW_S = 40.0   # replies this long after a question are kept with it
+MAX_REPLIES = 6            # ...up to this many
 
-_SENTENCE = re.compile(r"[^.?!]+[.?!]*")
+_END = re.compile(r"[.?!]+")
+_ABBREV = re.compile(r"\b(?:dr|mr|mrs|ms|st|vs|etc|jr|sr|inc|no|e\.g|i\.e|a\.m|p\.m)\.$", re.I)
 _WORD = re.compile(r"[A-Za-z0-9']+")
 _TAGS = {"right", "okay", "ok", "yeah", "yes", "no", "huh", "really", "sorry", "what", "hmm", "you know",
          "is it", "isn't it", "correct", "eh", "pardon", "hello", "see"}
@@ -59,8 +66,31 @@ def words(text: str) -> list[str]:
     return _WORD.findall(text.lower())
 
 
+def sentence_spans(text: str) -> list[tuple[int, str]]:
+    """(offset, sentence) pairs. A period inside a number ("3.5") or after "Dr." doesn't end one."""
+    spans, start = [], 0
+
+    def take(end: int) -> None:
+        nonlocal start
+        raw = text[start:end]
+        s = raw.strip()
+        if s and words(s):
+            spans.append((start + len(raw) - len(raw.lstrip()), s))
+        start = end
+
+    for m in _END.finditer(text):
+        after = text[m.end():m.end() + 1]
+        if after and not after.isspace():
+            continue  # "3.5", "e.g.x": not the end of a sentence
+        if m.group() == "." and _ABBREV.search(text[start:m.end()].rstrip()):
+            continue
+        take(m.end())
+    take(len(text))
+    return spans
+
+
 def sentences(text: str) -> list[str]:
-    return [s.strip() for s in _SENTENCE.findall(text) if s.strip() and words(s)]
+    return [s for _, s in sentence_spans(text)]
 
 
 def is_question(sentence: str) -> bool:
@@ -86,6 +116,8 @@ class Question:
     answer: str = ""       # the first words of the reply, so you can see what counted
     answered_t: float | None = None
     end_t: float = 0.0     # when the utterance holding the question ended
+    replies: list[dict] = field(default_factory=list)  # {"t", "speaker", "text", "ref"}: the exchange
+    ref: object = None     # whatever the caller passed to `observe` for the utterance that asked
     reply_words: int = field(default=0, repr=False)
 
     def to_json(self) -> dict:
@@ -103,11 +135,19 @@ def effective_status(q: Question, marks: dict[str, str]) -> str:
 
 
 def pick_current(questions: list[Question], marks: dict[str, str], now_t: float) -> Question | None:
-    """The newest open question; an older one only while it's from the last 10 minutes."""
+    """The newest open question.
+
+    The last question asked on the call stays current until it is answered or
+    dismissed, however long ago: nobody has asked anything since, so it is still
+    the one on the table. An earlier question only becomes current again while
+    it is from the last 10 minutes.
+    """
     open_qs = [q for q in questions if effective_status(q, marks) == OPEN]
     if not open_qs:
         return None
     newest = max(open_qs, key=lambda q: q.t)
+    if newest is max(questions, key=lambda q: q.t):
+        return newest
     return newest if now_t - newest.t <= CURRENT_WINDOW_S else None
 
 
@@ -121,10 +161,14 @@ class QuestionTracker:
     def current(self) -> Question | None:
         return pick_current(self.questions, self.marks, self.now_t)
 
-    def observe(self, t: float, end_t: float, speaker: str, text: str) -> list[Question]:
-        """Feed one utterance, in time order. Returns the questions it created or changed."""
+    def observe(self, t: float, end_t: float, speaker: str, text: str, ref: object = None) -> list[Question]:
+        """Feed one utterance, in time order. Returns the questions it created or changed.
+
+        `ref` is kept on any question this utterance asks and on any reply it
+        adds to an exchange, so a caller can find the utterance again.
+        """
         self.now_t = max(self.now_t, end_t)
-        spans = [(m.start(), m.group().strip()) for m in _SENTENCE.finditer(text) if words(m.group())]
+        spans = sentence_spans(text)
         sents = [s for _, s in spans]
         first_q = next((i for i, s in enumerate(sents) if is_question(s)), len(sents))
         changed = []
@@ -133,22 +177,41 @@ class QuestionTracker:
             q = self._answer(t, speaker, reply)
             if q is not None:
                 changed.append(q)
+            q = self._extend_exchange(t, speaker, reply, ref)
+            if q is not None and q not in changed:
+                changed.append(q)
         for s in sents[first_q:]:
             if is_question(s):
-                q = self._ask(t, end_t, speaker, s)
+                q = self._ask(t, end_t, speaker, s, ref)
                 if q is not None:
                     changed.append(q)
         return changed
 
-    def _ask(self, t: float, end_t: float, speaker: str, text: str) -> Question | None:
+    def _ask(self, t: float, end_t: float, speaker: str, text: str, ref: object = None) -> Question | None:
         for q in reversed(self.questions):
             if t - q.t > REPEAT_WINDOW_S:
                 break
             if q.asker == speaker and SequenceMatcher(None, q.text.lower(), text.lower()).ratio() >= 0.75:
                 q.end_t = end_t  # asked again, or rephrased: still the same question
                 return None
-        q = Question(f"q{len(self.questions) + 1}", round(t, 1), speaker, text, end_t=round(end_t, 1))
+        q = Question(f"q{len(self.questions) + 1}", round(t, 1), speaker, text, end_t=round(end_t, 1), ref=ref)
         self.questions.append(q)
+        return q
+
+    def _extend_exchange(self, t: float, speaker: str, reply: str, ref: object) -> Question | None:
+        """Keep what is said after the newest question with it, whoever answered it."""
+        if not self.questions:
+            return None
+        q = self.questions[-1]
+        if t - q.end_t > EXCHANGE_WINDOW_S or len(q.replies) >= MAX_REPLIES:
+            return None
+        if speaker == q.asker and (speaker not in self.group_labels or t - q.end_t < GROUP_PAUSE_S):
+            return None
+        if q.status != OPEN and q.answered_by and speaker != q.answered_by:
+            return None  # once answered, only the answerer carrying on still belongs to the exchange
+        q.replies.append({"t": round(t, 1), "speaker": speaker, "text": " ".join(reply.split()), "ref": ref})
+        if q.status == ANSWERED and _DEFER.search(reply):
+            q.status = FOLLOW_UP  # "yes, but let me check" is a follow-up, not an answer
         return q
 
     def _answer(self, t: float, speaker: str, reply: str) -> Question | None:

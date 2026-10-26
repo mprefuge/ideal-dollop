@@ -116,7 +116,14 @@ def _transcribe(folders: list[Path], args) -> int:
             print(f"  FAILED: {type(exc).__name__}: {exc}. Audio is untouched; retry with "
                   f"`transcript-assistant transcribe \"{folder}\"`.", file=sys.stderr)
             continue
-        print(f"  {folder / 'transcript.md'}")
+        print(f"  {folder / 'meeting.md'}")
+        notes = meta.get("notes", {})
+        if "error" in notes:
+            print(f"  warning: meeting notes failed: {notes['error']}", file=sys.stderr)
+        else:
+            qs = notes.get("questions", {})
+            print(f"  {qs.get('asked', 0)} question(s), {qs.get('open', 0)} not answered, "
+                  f"{notes.get('action_items', 0)} action item(s)")
         for w in meta.get("warnings", []):
             print(f"  warning: {w}")
     return 1 if failures else 0

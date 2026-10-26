@@ -40,6 +40,7 @@ MIN_SPEECH_S = 0.4          # shorter bursts are clicks and coughs
 MAX_UTTERANCE_S = 15.0      # long monologues are cut so text keeps appearing
 MIN_LEVEL = 0.006           # RMS below this is never speech
 COMMIT_LAG_S = 10.0         # give up waiting for the other channel after this long
+ECHO_LOOKBACK_S = 60.0      # far-end utterances this recent are checked against the mic for echo
 HALLUCINATIONS = {"thank you.", "thanks for watching!", "thank you for watching.", "you", "bye.", "."}
 
 LABELS = {"mic": "Me", "others": "Others"}
@@ -149,7 +150,7 @@ class LiveTranscriber:
         self._skip_lock = threading.Lock()
         self._seg = {"mic": Segmenter(), "others": Segmenter()}
         self._pending: list[Segment] = []
-        self._recent: deque[Segment] = deque(maxlen=40)
+        self._recent: deque[Segment] = deque(maxlen=400)
         self._marks_mtime = None
         self._thread = threading.Thread(target=self._run, name="live-transcribe", daemon=True)
 
@@ -252,7 +253,8 @@ class LiveTranscriber:
         if not ready:
             self._absorb_marks()
             return
-        others = [o for o in list(self._recent) + self._pending if o.channel == "others"]
+        since = min(s.start for s in ready) - ECHO_LOOKBACK_S
+        others = [o for o in list(self._recent) + self._pending if o.channel == "others" and o.end >= since]
         taken = {id(s) for s in ready}
         self._pending = [s for s in self._pending if id(s) not in taken]
         with open(self.dir / "transcript.jsonl", "a", encoding="utf-8") as f:
